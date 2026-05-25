@@ -1,0 +1,16 @@
+# Optional fixed feeding areas in pixel coordinates.
+# Add one or more regions when the feeding trough/grass area is fixed in the camera view.
+#
+# Example:
+# regions:
+#   - name: feed_trough_left
+#     x1: 250
+#     y1: 120
+#     x2: 420
+#     y2: 260
+regions: [
+  780.0,
+  493.0,
+  931.0,
+  672.0
+]

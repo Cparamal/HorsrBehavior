@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "D:\\DevWorkSpace\\python\\datasets",
+  "weights_dir": "D:\\DevWorkSpace\\python\\HorseBehavior\\weights",
+  "runs_dir": "D:\\DevWorkSpace\\python\\HorseBehavior\\runs",
+  "uuid": "84819f1765575cc3070a89ea807447bffb0479d2ea45004964c480f92248cc81",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}
