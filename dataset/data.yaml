@@ -1,0 +1,10 @@
+path: D:/DevWorkSpace/python/HorseBehavior/dataset
+train: images/train
+val: images/val
+
+names:
+  0: horse
+  1: head
+  2: grass
+  3: water
+  4: lying_horse
