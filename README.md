@@ -180,6 +180,8 @@ config/
 
 ## 推理脚本使用方法
 
+.\.venv\Scripts\python.exe infer.py --method roi-yolo --source video/stable_20260522_155032.mp4 --output outputs/roi_video.mp4 --max-frames 0
+
 统一推理入口是 `infer.py`，通过 `--method` 选择行为判断方式：
 
 | 方法 | 命令值 | 说明 |
