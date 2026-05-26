@@ -4,3 +4,5 @@ docs
 video
 tests
 outputs
+.cache
+.claude

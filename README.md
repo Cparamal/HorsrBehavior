@@ -178,5 +178,102 @@ config/
 - 画面中出现马匹全身框
 - 行为文字清晰可读
 
+## 推理脚本使用方法
 
-## 现在还存在误识别的情况，这跟数据集的质量有关，规则定义尚不完善，食物的置信度太低了，低头的规则不可靠，吃饭，低头，站立容易误判
+.\.venv\Scripts\python.exe infer.py --method roi-yolo --source video/stable_20260522_155032.mp4 --output outputs/roi_video.mp4 --max-frames 0
+
+统一推理入口是 `infer.py`，通过 `--method` 选择行为判断方式：
+
+| 方法 | 命令值 | 说明 |
+| --- | --- | --- |
+| 规则判断 | `rules` | 使用 YOLO 检测框和人工规则判断行为，适合做可解释 baseline。 |
+| LightGBM | `lightgbm` | 使用 YOLO 检测框提取结构化特征，再用 LightGBM 分类。当前推荐作为主对比模型。 |
+| ROI YOLO 分类 | `roi-yolo` | 先用 YOLO 检测马体框，裁剪 ROI，再用 YOLO 分类器判断行为。 |
+
+### 通用参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `--source` | 输入视频路径，默认 `video/stable_20260523_105109.mp4`。 |
+| `--output` | 输出标注视频路径。 |
+| `--csv` | 输出逐帧结果 CSV 路径；传空字符串可关闭 CSV。 |
+| `--max-frames` | 最多处理多少帧；`0` 表示处理完整视频。 |
+| `--no-display` | 不打开实时预览窗口，批量生成视频时建议加上。 |
+| `--imgsz` | YOLO 检测输入尺寸，默认 `640`。 |
+
+### LightGBM 推理
+
+```powershell
+.\.venv\Scripts\python.exe infer.py `
+  --method lightgbm `
+  --source video/stable_20260523_105109.mp4 `
+  --output outputs/behavior_lightgbm_1800.mp4 `
+  --csv outputs/behavior_lightgbm_1800.csv `
+  --max-frames 1800 `
+  --no-display
+```
+
+常用可选参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--model` | `runs/detect/runs/detect/horse_behavior_yolo/weights/best.pt` | YOLO 检测器权重。 |
+| `--behavior-model` | `runs/behavior_cls/lightgbm_behavior.joblib` | LightGBM 行为分类模型。 |
+| `--label-encoder` | `runs/behavior_cls/label_encoder.joblib` | 行为标签编码器。 |
+| `--feature-columns` | `runs/behavior_cls/feature_columns.txt` | 训练时保存的特征列顺序。 |
+| `--smooth-window` | `15` | 对最近多少帧的分类概率做平均平滑。 |
+
+### ROI YOLO 分类推理
+
+```powershell
+.\.venv\Scripts\python.exe infer.py `
+  --method roi-yolo `
+  --source video/stable_20260523_105109.mp4 `
+  --output outputs/behavior_yolo_roi_cls_1800.mp4 `
+  --csv outputs/behavior_yolo_roi_cls_1800.csv `
+  --max-frames 1800 `
+  --no-display
+```
+
+常用可选参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--det-model` | `runs/detect/runs/detect/horse_behavior_yolo/weights/best.pt` | YOLO 检测器权重。 |
+| `--cls-model` | `runs/behavior_yolo_roi_cls/horse_behavior_yolo_roi_cls/weights/best.pt` | ROI 行为分类器权重。 |
+| `--crop-padding` | `0.15` | 马体检测框外扩比例，裁剪 ROI 时使用。 |
+| `--cls-imgsz` | `224` | ROI 分类器输入尺寸。 |
+
+### 规则推理
+
+规则推理默认只预览画面；如果要保存视频，需要额外加 `--save-output`。
+
+```powershell
+.\.venv\Scripts\python.exe infer.py `
+  --method rules `
+  --source video/stable_20260523_105109.mp4 `
+  --output outputs/behavior_rules_1800.mp4 `
+  --csv outputs/behavior_rules_1800.csv `
+  --max-frames 1800 `
+  --save-output `
+  --no-display
+```
+
+常用可选参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--model` | `runs/detect/runs/detect/horse_behavior_yolo/weights/best.pt` | YOLO 检测器权重。 |
+| `--feed-regions` | `config/feed_regions.yaml` | 固定投喂区域配置。 |
+| `--smooth-seconds` | `2.0` | 规则结果时间平滑窗口。 |
+| `--debug` | 关闭 | 绘制更多规则调试辅助线和区域。 |
+
+### 快速测试命令
+
+只跑 1 帧用于确认环境、模型路径和输出路径是否正常：
+
+```powershell
+.\.venv\Scripts\python.exe infer.py --method lightgbm --max-frames 1 --no-display --output outputs/smoke_lightgbm.mp4 --csv outputs/smoke_lightgbm.csv
+.\.venv\Scripts\python.exe infer.py --method roi-yolo --max-frames 1 --no-display --output outputs/smoke_roi.mp4 --csv outputs/smoke_roi.csv
+.\.venv\Scripts\python.exe infer.py --method rules --max-frames 1 --save-output --no-display --output outputs/smoke_rules.mp4 --csv outputs/smoke_rules.csv
+```
