@@ -35,6 +35,16 @@ class FrameDecision:
     behavior: str
     horse: Detection | None
     detections: list[Detection]
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class BehaviorExplanation:
+    behavior: str
+    reason: str
+    horse: Detection | None
+    head: Detection | None
+    detections: list[Detection]
 
 
 class BehaviorSmoother:
@@ -164,6 +174,12 @@ def head_near_horse_front_edge(
     return near_left_front or near_top_front
 
 
+def head_y_ratio_in_horse(head: Detection, horse: Detection) -> float:
+    _, head_y = box_center(head.xyxy)
+    _, horse_y1, _, horse_y2 = horse.xyxy
+    return (head_y - horse_y1) / max(1.0, horse_y2 - horse_y1)
+
+
 def head_near_regions(
     head: Detection,
     regions: Iterable[tuple[float, float, float, float]],
@@ -198,22 +214,69 @@ def head_touching_water(
     return head_ratio >= min_head_overlap_ratio or water_ratio >= min_water_overlap_ratio
 
 
-def classify_behavior(
+def boxes_overlap_enough(
+    a: Detection,
+    b: Detection,
+    min_overlap_ratio: float,
+) -> bool:
+    overlap = intersection_area(a.xyxy, b.xyxy)
+    if overlap <= 0:
+        return False
+    return (
+        overlap / max(1.0, box_area(a.xyxy)) >= min_overlap_ratio
+        or overlap / max(1.0, box_area(b.xyxy)) >= min_overlap_ratio
+    )
+
+
+def grass_in_front_of_head(head: Detection, grass: Detection, horse: Detection | None = None) -> bool:
+    head_x1, head_y1, head_x2, head_y2 = head.xyxy
+    head_x, head_y = box_center(head.xyxy)
+    grass_x, grass_y = box_center(grass.xyxy)
+
+    if horse is not None:
+        horse_x1, horse_y1, horse_x2, horse_y2 = horse.xyxy
+        left_space = abs(head_x - horse_x1)
+        right_space = abs(horse_x2 - head_x)
+        top_space = abs(head_y - horse_y1)
+        bottom_space = abs(horse_y2 - head_y)
+        side = min(
+            [
+                (left_space, "left"),
+                (right_space, "right"),
+                (top_space, "top"),
+                (bottom_space, "bottom"),
+            ],
+            key=lambda item: item[0],
+        )[1]
+        if side == "left":
+            return grass_x <= head_x
+        if side == "right":
+            return grass_x >= head_x
+        if side == "top":
+            return grass_y <= head_y
+        return grass_y >= head_y
+
+    return grass_x <= head_x or grass_y <= head_y
+
+
+def explain_behavior(
     detections: list[Detection],
     image_size: tuple[int, int],
     feed_regions: list[tuple[float, float, float, float]] | None = None,
-    eating_threshold_inside: float = 0.15,
-    eating_threshold_outside: float = 0.12,
+    eating_threshold_inside: float = 0.10,
+    eating_threshold_outside: float = 0.10,
     drinking_threshold: float = 0.12,
     head_down_ratio: float = 0.58,
     min_grass_conf: float = 0.18,
     min_feed_region_grass_conf: float = 0.10,
     min_overlap_grass_conf: float = 0.05,
+    min_grass_overlap_ratio: float = 0.10,
     min_water_conf: float = 0.45,
     min_pose_conf: float = 0.35,
     front_head_margin_ratio: float = 0.20,
     top_head_margin_ratio: float = 0.25,
-) -> str:
+    upper_front_standing_ratio: float = 0.30,
+) -> BehaviorExplanation:
     feed_regions = feed_regions or []
     image_width, image_height = image_size
     scale = max(image_width, image_height)
@@ -226,38 +289,95 @@ def classify_behavior(
     sitting = select_largest_box(detections, "sitting_horse")
 
     if lying is not None and lying.conf >= min_pose_conf:
-        return "躺卧"
+        return BehaviorExplanation("躺卧", f"lying_horse conf={lying.conf:.3f}", horse, head, detections)
     if sitting is not None and sitting.conf >= min_pose_conf:
-        return "坐下"
+        return BehaviorExplanation("坐下", f"sitting_horse conf={sitting.conf:.3f}", horse, head, detections)
 
     if head is not None:
         for grass in grass_boxes:
             grass_in_feed_region = point_in_regions(box_center(grass.xyxy), feed_regions)
             distance_conf = min_feed_region_grass_conf if grass_in_feed_region else min_grass_conf
             threshold_ratio = eating_threshold_inside if grass_in_feed_region else eating_threshold_outside
-            if grass.conf >= distance_conf and center_distance(head, grass) <= threshold_ratio * scale:
-                return "吃饭"
-            if grass.conf >= min_overlap_grass_conf and boxes_overlap(head, grass):
-                return "吃饭"
+            distance_ratio = center_distance(head, grass) / scale
+            if grass.conf >= distance_conf and distance_ratio <= threshold_ratio:
+                region_label = "feed_region" if grass_in_feed_region else "outside_region"
+                return BehaviorExplanation(
+                    "吃饭",
+                    f"grass_distance {region_label} conf={grass.conf:.3f} dist={distance_ratio:.3f} <= {threshold_ratio:.3f}",
+                    horse,
+                    head,
+                    detections,
+                )
+            if grass.conf >= min_overlap_grass_conf and boxes_overlap_enough(head, grass, min_grass_overlap_ratio) and grass_in_front_of_head(head, grass, horse):
+                return BehaviorExplanation(
+                    "吃饭",
+                    f"grass_overlap_front conf={grass.conf:.3f} overlap>={min_grass_overlap_ratio:.2f}",
+                    horse,
+                    head,
+                    detections,
+                )
 
         for water in water_boxes:
             if head_touching_water(head, water):
-                return "低头喝"
+                return BehaviorExplanation("低头喝", f"water_overlap conf={water.conf:.3f}", horse, head, detections)
 
         if horse is not None:
-            _, head_y = box_center(head.xyxy)
-            _, horse_y1, _, horse_y2 = horse.xyxy
-            if head_y >= horse_y1 + (horse_y2 - horse_y1) * head_down_ratio:
-                return "低头"
-            if head_near_horse_front_edge(head, horse, front_head_margin_ratio, top_head_margin_ratio) and box_contains_point(
+            head_y_ratio = head_y_ratio_in_horse(head, horse)
+            if head_y_ratio >= head_down_ratio:
+                return BehaviorExplanation("低头", f"head_y_ratio >= {head_down_ratio:.2f}", horse, head, detections)
+            if head_y_ratio > upper_front_standing_ratio and head_near_horse_front_edge(head, horse, front_head_margin_ratio, top_head_margin_ratio) and box_contains_point(
                 horse.xyxy,
                 box_center(head.xyxy),
             ):
-                return "低头"
+                return BehaviorExplanation(
+                    "低头",
+                    f"head_front_edge y_ratio>{upper_front_standing_ratio:.2f}",
+                    horse,
+                    head,
+                    detections,
+                )
 
     if horse is not None:
-        return "站立"
-    return "未知"
+        return BehaviorExplanation("站立", "horse_detected_no_higher_priority_rule", horse, head, detections)
+    return BehaviorExplanation("未知", "no_horse_detected", horse, head, detections)
+
+
+def classify_behavior(
+    detections: list[Detection],
+    image_size: tuple[int, int],
+    feed_regions: list[tuple[float, float, float, float]] | None = None,
+    eating_threshold_inside: float = 0.10,
+    eating_threshold_outside: float = 0.10,
+    drinking_threshold: float = 0.12,
+    head_down_ratio: float = 0.58,
+    min_grass_conf: float = 0.18,
+    min_feed_region_grass_conf: float = 0.10,
+    min_overlap_grass_conf: float = 0.05,
+    min_grass_overlap_ratio: float = 0.10,
+    min_water_conf: float = 0.45,
+    min_pose_conf: float = 0.35,
+    front_head_margin_ratio: float = 0.20,
+    top_head_margin_ratio: float = 0.25,
+    upper_front_standing_ratio: float = 0.30,
+) -> str:
+    return explain_behavior(
+        detections,
+        image_size=image_size,
+        feed_regions=feed_regions,
+        eating_threshold_inside=eating_threshold_inside,
+        eating_threshold_outside=eating_threshold_outside,
+        drinking_threshold=drinking_threshold,
+        head_down_ratio=head_down_ratio,
+        min_grass_conf=min_grass_conf,
+        min_feed_region_grass_conf=min_feed_region_grass_conf,
+        min_overlap_grass_conf=min_overlap_grass_conf,
+        min_grass_overlap_ratio=min_grass_overlap_ratio,
+        min_water_conf=min_water_conf,
+        min_pose_conf=min_pose_conf,
+        front_head_margin_ratio=front_head_margin_ratio,
+        top_head_margin_ratio=top_head_margin_ratio,
+        upper_front_standing_ratio=upper_front_standing_ratio,
+    ).behavior
 
 
 def detections_from_result(result, conf_threshold: float) -> list[Detection]:
@@ -373,6 +493,61 @@ def draw_decision(frame, decision: FrameDecision) -> None:
         draw_label(frame, f"行为：{decision.behavior}", (20, 40), color=(80, 160, 230))
 
 
+def draw_debug_box(frame, detection: Detection, color: tuple[int, int, int], label: str | None = None) -> None:
+    x1, y1, x2, y2 = [int(round(v)) for v in detection.xyxy]
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+    if label:
+        cv2.putText(frame, label, (x1, max(16, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+
+def draw_debug_overlay(
+    frame,
+    explanation: BehaviorExplanation | FrameDecision,
+    feed_regions: list[tuple[float, float, float, float]],
+) -> None:
+    for x1, y1, x2, y2 in feed_regions:
+        cv2.rectangle(
+            frame,
+            (int(round(x1)), int(round(y1))),
+            (int(round(x2)), int(round(y2))),
+            (0, 215, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "feed_region",
+            (int(round(x1)), max(16, int(round(y1)) - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 215, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    colors = {
+        "head": (255, 80, 80),
+        "grass": (80, 220, 80),
+        "water": (255, 120, 0),
+        "lying_horse": (180, 80, 255),
+        "sitting_horse": (180, 80, 255),
+    }
+    for detection in explanation.detections:
+        if detection.name == "horse":
+            continue
+        color = colors.get(detection.name)
+        if color is None:
+            continue
+        draw_debug_box(frame, detection, color, f"{detection.name} {detection.conf:.2f}")
+
+    if isinstance(explanation, BehaviorExplanation) and explanation.head is not None:
+        hx, hy = box_center(explanation.head.xyxy)
+        cv2.circle(frame, (int(round(hx)), int(round(hy))), 5, (255, 255, 255), -1)
+
+    reason = getattr(explanation, "reason", "")
+    if reason:
+        draw_label(frame, f"reason: {reason}", (20, frame.shape[0] - 18), color=(235, 235, 235))
+
+
 def resize_for_display(frame, scale: float):
     if scale <= 0 or abs(scale - 1.0) < 1e-6:
         return frame
@@ -391,7 +566,7 @@ def decide_frame(
     args,
 ) -> FrameDecision:
     detections = detections_from_result(result, conf_threshold)
-    raw_behavior = classify_behavior(
+    explanation = explain_behavior(
         detections,
         image_size=image_size,
         feed_regions=feed_regions,
@@ -402,14 +577,17 @@ def decide_frame(
         min_grass_conf=args.min_grass_conf,
         min_feed_region_grass_conf=args.min_feed_region_grass_conf,
         min_overlap_grass_conf=args.min_overlap_grass_conf,
+        min_grass_overlap_ratio=args.min_grass_overlap_ratio,
         min_water_conf=args.min_water_conf,
         min_pose_conf=args.min_pose_conf,
         front_head_margin_ratio=args.front_head_margin_ratio,
         top_head_margin_ratio=args.top_head_margin_ratio,
+        upper_front_standing_ratio=args.upper_front_standing_ratio,
     )
+    raw_behavior = explanation.behavior
     behavior = smoother.update(raw_behavior)
     horse = select_largest_box(detections, "horse")
-    return FrameDecision(raw_behavior=raw_behavior, behavior=behavior, horse=horse, detections=detections)
+    return FrameDecision(raw_behavior=raw_behavior, behavior=behavior, horse=horse, detections=detections, reason=explanation.reason)
 
 
 def write_csv_header(writer) -> None:
@@ -475,6 +653,8 @@ def run_video(
             result = model.predict(frame, imgsz=args.imgsz, conf=effective_model_conf(args), verbose=False)[0]
             decision = decide_frame(result, (width, height), effective_model_conf(args), smoother, feed_regions, args)
             draw_decision(frame, decision)
+            if args.debug:
+                draw_debug_overlay(frame, decision, feed_regions)
             if writer is not None:
                 writer.write(frame)
             if not args.no_display:
@@ -524,6 +704,8 @@ def run_images(
         result = model.predict(frame, imgsz=args.imgsz, conf=effective_model_conf(args), verbose=False)[0]
         decision = decide_frame(result, (width, height), effective_model_conf(args), smoother, feed_regions, args)
         draw_decision(frame, decision)
+        if args.debug:
+            draw_debug_overlay(frame, decision, feed_regions)
         out_path = output_dir / image_path.name
         cv2.imwrite(str(out_path), frame)
         print(f"{image_path.name}: {decision.behavior}")
@@ -542,15 +724,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size.")
     parser.add_argument("--smooth-seconds", type=float, default=2.0, help="Temporal smoothing window for video.")
     parser.add_argument("--smooth-threshold", type=float, default=0.6, help="Majority threshold for smoothing.")
-    parser.add_argument("--eating-threshold-inside", type=float, default=0.15, help="Head-to-grass distance ratio inside feed regions.")
-    parser.add_argument("--eating-threshold-outside", type=float, default=0.12, help="Head-to-grass distance ratio outside feed regions.")
+    parser.add_argument("--eating-threshold-inside", type=float, default=0.10, help="Head-to-grass distance ratio inside feed regions.")
+    parser.add_argument("--eating-threshold-outside", type=float, default=0.10, help="Head-to-grass distance ratio outside feed regions.")
     parser.add_argument("--drinking-threshold", type=float, default=0.12, help="Head-to-water distance ratio.")
     parser.add_argument("--head-down-ratio", type=float, default=0.58, help="Head center must be below this fraction of horse height.")
     parser.add_argument("--front-head-margin-ratio", type=float, default=0.20, help="Head near the horse front/left edge is treated as head-down for overhead cameras.")
     parser.add_argument("--top-head-margin-ratio", type=float, default=0.25, help="Head near the horse top edge is treated as head-down for overhead cameras.")
+    parser.add_argument("--upper-front-standing-ratio", type=float, default=0.30, help="Head in this upper fraction of the horse box cannot trigger front-edge head-down without eating/drinking evidence.")
     parser.add_argument("--min-grass-conf", type=float, default=0.18, help="Minimum grass confidence for distance-based eating rules.")
     parser.add_argument("--min-feed-region-grass-conf", type=float, default=0.10, help="Minimum grass confidence for distance-based eating rules inside fixed feed regions.")
     parser.add_argument("--min-overlap-grass-conf", type=float, default=0.05, help="Minimum grass confidence when grass overlaps the selected head.")
+    parser.add_argument("--min-grass-overlap-ratio", type=float, default=0.10, help="Minimum head/grass overlap area ratio for overlap-based eating rules.")
     parser.add_argument("--min-water-conf", type=float, default=0.45, help="Minimum water confidence for drinking rules.")
     parser.add_argument("--min-pose-conf", type=float, default=0.35, help="Minimum lying/sitting confidence for pose rules.")
     parser.add_argument("--max-frames", type=int, default=0, help="Limit video frames for quick tests. 0 means full video.")
@@ -559,6 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-output", action="store_true", help="Save annotated video while displaying realtime playback.")
     parser.add_argument("--no-display", action="store_true", help="Do not open a realtime preview window.")
     parser.add_argument("--display-scale", type=float, default=0.5, help="Realtime preview scale. Saved video keeps original size.")
+    parser.add_argument("--debug", action="store_true", help="Draw auxiliary detections, feed regions, and behavior-rule reason.")
     return parser
 
 
