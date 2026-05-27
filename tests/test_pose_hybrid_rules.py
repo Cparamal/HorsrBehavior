@@ -1,6 +1,8 @@
 import math
 import unittest
 
+import pandas as pd
+
 from horse_behavior.pose_hybrid_rules import RuleSignal, classify_pose_rule
 
 
@@ -70,6 +72,21 @@ class PoseHybridRuleTests(unittest.TestCase):
 
         self.assertEqual(none_signal.reason, "missing_head_pose")
         self.assertEqual(nan_signal.reason, "missing_head_pose")
+
+    def test_unknown_when_head_pose_value_is_pandas_na(self):
+        signal = classify_pose_rule(row(nose_backline_y_diff=pd.NA))
+
+        self.assertEqual(signal, RuleSignal("unknown", "missing_head_pose", 0.0, "weak"))
+
+    def test_pandas_series_with_missing_pose_flag_is_unknown(self):
+        signal = classify_pose_rule(pd.Series(row(pose_exists=pd.NA)))
+
+        self.assertEqual(signal, RuleSignal("unknown", "no_pose", 0.0, "weak"))
+
+    def test_pandas_series_with_missing_nose_flag_is_unknown(self):
+        signal = classify_pose_rule(pd.Series(row(nose_visible=pd.NA)))
+
+        self.assertEqual(signal, RuleSignal("unknown", "missing_head_pose", 0.0, "weak"))
 
     def test_head_low_and_feed_threshold_boundaries_are_inclusive(self):
         signal = classify_pose_rule(row(nose_backline_y_diff=-0.18, nose_to_feed_distance=0.10, grass_exists=1))

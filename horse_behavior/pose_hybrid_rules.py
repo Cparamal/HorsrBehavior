@@ -16,7 +16,9 @@ def _flag(value: object) -> bool:
 
 
 def _finite_number(value: object, missing_sentinel: float | None = None) -> float | None:
-    if value is None or value == "":
+    if value is None:
+        return None
+    if isinstance(value, str) and value == "":
         return None
     try:
         number = float(value)
