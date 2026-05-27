@@ -45,6 +45,9 @@ def predict_pose_lightgbm(
     feature_row: dict[str, float | int],
     feature_columns: list[str],
 ) -> ModelSignal:
+    if not feature_columns:
+        raise RuntimeError("No feature columns provided for LightGBM prediction")
+
     missing = [column for column in feature_columns if column not in feature_row]
     if missing:
         raise RuntimeError(f"Feature row is missing trained columns: {', '.join(missing)}")
@@ -53,8 +56,18 @@ def predict_pose_lightgbm(
         [{column: feature_row[column] for column in feature_columns}],
         columns=feature_columns,
     ).astype(float)
-    probabilities = model.predict_proba(frame)[0]
+    probability_rows = model.predict_proba(frame)
     classes = [str(value) for value in label_encoder.classes_]
+    if len(probability_rows) < 1:
+        raise RuntimeError("LightGBM probability/class mismatch: no probability rows returned")
+
+    probabilities = probability_rows[0]
+    if len(probabilities) != len(classes):
+        raise RuntimeError(
+            "LightGBM probability/class mismatch: "
+            f"got {len(probabilities)} probabilities for {len(classes)} classes"
+        )
+
     probability_map = {label: float(probability) for label, probability in zip(classes, probabilities)}
     behavior = max(probability_map.items(), key=lambda item: item[1])[0]
     return ModelSignal(
@@ -93,7 +106,11 @@ def fuse_rule_and_model(
             model.probabilities,
         )
 
-    if rule.strength == "strong" and rule.confidence >= config.strong_rule_threshold:
+    if (
+        rule.strength == "strong"
+        and rule.behavior != "unknown"
+        and rule.confidence >= config.strong_rule_threshold
+    ):
         return FusedPoseDecision(
             rule.behavior,
             rule.confidence,

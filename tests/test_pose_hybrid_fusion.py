@@ -28,6 +28,11 @@ class FakeEncoder:
     classes_ = np.array(["standing", "eating", "drinking"], dtype=object)
 
 
+class EmptyProbabilityModel:
+    def predict_proba(self, frame):
+        return np.array([], dtype=float).reshape(0, 3)
+
+
 class PoseHybridFusionTests(unittest.TestCase):
     def test_load_feature_columns_preserves_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -49,6 +54,33 @@ class PoseHybridFusionTests(unittest.TestCase):
         self.assertEqual(signal.behavior, "eating")
         self.assertAlmostEqual(signal.confidence, 0.8)
         self.assertEqual(signal.probabilities["drinking"], 0.1)
+
+    def test_predict_pose_lightgbm_rejects_empty_feature_columns(self):
+        with self.assertRaisesRegex(RuntimeError, "feature columns"):
+            predict_pose_lightgbm(
+                model=FakeModel([0.1, 0.8, 0.1]),
+                label_encoder=FakeEncoder(),
+                feature_row={"pose_exists": 1},
+                feature_columns=[],
+            )
+
+    def test_predict_pose_lightgbm_rejects_empty_probability_rows(self):
+        with self.assertRaisesRegex(RuntimeError, "probability/class mismatch"):
+            predict_pose_lightgbm(
+                model=EmptyProbabilityModel(),
+                label_encoder=FakeEncoder(),
+                feature_row={"pose_exists": 1},
+                feature_columns=["pose_exists"],
+            )
+
+    def test_predict_pose_lightgbm_rejects_probability_class_mismatch(self):
+        with self.assertRaisesRegex(RuntimeError, "probability/class mismatch"):
+            predict_pose_lightgbm(
+                model=FakeModel([0.2, 0.8]),
+                label_encoder=FakeEncoder(),
+                feature_row={"pose_exists": 1},
+                feature_columns=["pose_exists"],
+            )
 
     def test_strong_rule_overrides_high_model_standing(self):
         decision = fuse_rule_and_model(
@@ -80,6 +112,38 @@ class PoseHybridFusionTests(unittest.TestCase):
         self.assertEqual(decision.behavior, "eating")
         self.assertEqual(decision.source, "agreement")
         self.assertGreater(decision.confidence, 0.90)
+
+    def test_model_none_returns_rules_only(self):
+        decision = fuse_rule_and_model(
+            rule=RuleSignal("drinking", "nose_near_water", 0.92, "strong"),
+            model=None,
+            config=FusionConfig(),
+        )
+
+        self.assertEqual(decision.behavior, "drinking")
+        self.assertEqual(decision.source, "rules_only")
+        self.assertEqual(decision.model_behavior, "unknown")
+        self.assertEqual(decision.model_probabilities, {})
+
+    def test_weak_unknown_rule_defers_to_model(self):
+        decision = fuse_rule_and_model(
+            rule=RuleSignal("unknown", "no_rule_match", 0.10, "weak"),
+            model=ModelSignal("standing", 0.52, {"standing": 0.52, "eating": 0.48}),
+            config=FusionConfig(),
+        )
+
+        self.assertEqual(decision.behavior, "standing")
+        self.assertEqual(decision.source, "model")
+
+    def test_strong_unknown_rule_defers_to_model(self):
+        decision = fuse_rule_and_model(
+            rule=RuleSignal("unknown", "no_rule_match", 0.90, "strong"),
+            model=ModelSignal("standing", 0.52, {"standing": 0.52, "eating": 0.48}),
+            config=FusionConfig(),
+        )
+
+        self.assertEqual(decision.behavior, "standing")
+        self.assertEqual(decision.source, "model")
 
 
 if __name__ == "__main__":
