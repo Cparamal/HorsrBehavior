@@ -84,6 +84,35 @@ class NonCore6Result:
     keypoints = NonCore6Keypoints()
 
 
+class LowConfidenceNonCore6Result:
+    boxes = LowConfidenceBoxes()
+    keypoints = NonCore6Keypoints()
+
+
+class KeypointsWithoutConfidence:
+    def __init__(self):
+        import torch
+
+        self.xy = torch.tensor(
+            [
+                [
+                    [40.0, 95.0],
+                    [55.0, 90.0],
+                    [85.0, 55.0],
+                    [105.0, 50.0],
+                    [150.0, 52.0],
+                    [190.0, 58.0],
+                ]
+            ]
+        )
+        self.conf = None
+
+
+class ResultWithoutKeypointConfidence:
+    boxes = Boxes()
+    keypoints = KeypointsWithoutConfidence()
+
+
 def make_pose(nose=(40.0, 95.0), confidence=0.9):
     keypoints = np.array(
         [
@@ -116,6 +145,31 @@ class PoseHybridFeatureTests(unittest.TestCase):
     def test_pose_instances_from_result_rejects_non_core6_shape(self):
         with self.assertRaisesRegex(RuntimeError, f"Expected {len(CORE6_NAMES)} keypoints, got 5"):
             pose_instances_from_result(NonCore6Result(), min_pose_conf=0.25)
+
+    def test_pose_instances_from_result_rejects_non_core6_shape_before_conf_filter(self):
+        with self.assertRaisesRegex(RuntimeError, f"Expected {len(CORE6_NAMES)} keypoints, got 5"):
+            pose_instances_from_result(LowConfidenceNonCore6Result(), min_pose_conf=0.25)
+
+    def test_pose_instances_without_keypoint_confidence_remain_not_visible(self):
+        poses = pose_instances_from_result(ResultWithoutKeypointConfidence(), min_pose_conf=0.25)
+
+        result = extract_pose_hybrid_features(
+            pose=poses[0],
+            detections=[],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertEqual(result.row["nose_visible"], 0)
+        self.assertEqual(result.row["jaw_visible"], 0)
+        self.assertEqual(result.row["withers_visible"], 0)
+        self.assertEqual(result.row["keypoint_conf_mean"], -1.0)
+        self.assertEqual(result.row["nose_box_x_ratio"], -1.0)
+        self.assertEqual(result.row["nose_backline_y_diff"], -1.0)
 
     def test_select_main_pose_prefers_confidence_then_area(self):
         small = Core6Pose((0.0, 0.0, 50.0, 50.0), 0.8, make_pose().keypoints)

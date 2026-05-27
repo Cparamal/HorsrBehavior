@@ -93,11 +93,11 @@ def pose_instances_from_result(result, min_pose_conf: float) -> list[Core6Pose]:
 
     poses = []
     for index, (bbox, confidence, xy) in enumerate(zip(boxes_xyxy, box_conf, keypoint_xy)):
-        if float(confidence) < min_pose_conf:
-            continue
         if xy.shape[0] != len(CORE6_NAMES):
             raise RuntimeError(f"Expected {len(CORE6_NAMES)} keypoints, got {xy.shape[0]}")
-        conf = keypoint_conf[index] if keypoint_conf is not None else np.ones(len(CORE6_NAMES), dtype=np.float32)
+        if float(confidence) < min_pose_conf:
+            continue
+        conf = keypoint_conf[index] if keypoint_conf is not None else np.full(len(CORE6_NAMES), -1.0, dtype=np.float32)
         keypoints = np.column_stack((xy, conf)).astype(np.float32, copy=False)
         poses.append(
             Core6Pose(
