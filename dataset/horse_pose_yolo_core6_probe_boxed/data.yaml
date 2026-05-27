@@ -1,0 +1,10 @@
+path: D:/DevWorkSpace/python/HorseBehavior/dataset/horse_pose_yolo_core6_probe_boxed
+train: images/train
+val: images/val
+
+names:
+  0: horse
+
+kpt_shape: [6, 3]
+keypoint_names: ['nose', 'jaw', 'withers', 'neck_end', 'mid_back', 'croup']
+skeleton: [[0, 1], [2, 3], [3, 4], [4, 5]]
