@@ -197,10 +197,28 @@ class PoseHybridFeatureTests(unittest.TestCase):
         self.assertEqual(row["nose_visible"], 1)
         self.assertAlmostEqual(row["nose_box_y_ratio"], 0.75)
         self.assertLess(row["nose_backline_y_diff"], 0.0)
+        self.assertAlmostEqual(row["backline_flatness"], 6.0 / 105.0)
         self.assertEqual(row["nose_in_feed_region"], 1)
         self.assertEqual(row["grass_exists"], 1)
         self.assertEqual(row["water_exists"], 0)
         self.assertEqual(result.horse.name, "horse")
+
+    def test_backline_flatness_preserves_missing_sentinel(self):
+        pose = make_pose()
+        pose.keypoints[4, 2] = 0.10
+
+        result = extract_pose_hybrid_features(
+            pose=pose,
+            detections=[],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertEqual(result.row["backline_flatness"], -1.0)
 
     def test_extract_features_returns_exact_pose_hybrid_columns(self):
         result = extract_pose_hybrid_features(

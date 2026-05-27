@@ -276,13 +276,12 @@ def _backline_flatness(points: list[tuple[float, float] | None]) -> float:
     visible = [point for point in points if point is not None]
     if len(visible) < 3:
         return -1.0
-    first, middle, last = visible[0], visible[1], visible[-1]
-    x1, y1 = first
-    x2, y2 = last
-    denominator = math.hypot(x2 - x1, y2 - y1)
-    if denominator <= 0:
+    y_values = [point[1] for point in visible]
+    x_values = [point[0] for point in visible]
+    x_span = max(x_values) - min(x_values)
+    if x_span <= 0:
         return -1.0
-    return abs((y2 - y1) * middle[0] - (x2 - x1) * middle[1] + x2 * y1 - y2 * x1) / denominator
+    return (max(y_values) - min(y_values)) / max(1.0, x_span)
 
 
 def _nearest_detection_to_point(candidates: list[Detection], point: tuple[float, float] | None) -> Detection | None:
