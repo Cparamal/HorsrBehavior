@@ -33,6 +33,8 @@ class BehaviorStateMachine:
 
     def update(self, decision: FusedPoseDecision) -> StableBehaviorDecision:
         raw = decision.behavior
+        if raw == "unknown":
+            raw = self.config.default_behavior
         transition = "held"
 
         if raw == self.stable_behavior:
@@ -41,9 +43,6 @@ class BehaviorStateMachine:
             self.exit_count = 0
             self.state_age_frames += 1
             return self._result(decision, transition)
-
-        if raw == "unknown":
-            raw = self.config.default_behavior
 
         if self.stable_behavior != self.config.default_behavior and raw == self.config.default_behavior:
             self.exit_count += 1

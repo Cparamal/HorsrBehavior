@@ -39,6 +39,16 @@ class PoseHybridStateTests(unittest.TestCase):
 
         self.assertEqual(state.stable_behavior, "drinking")
 
+    def test_unknown_holds_default_without_reentering_default(self):
+        machine = BehaviorStateMachine(StateMachineConfig(enter_frames={"standing": 3}, default_behavior="standing"))
+
+        for _ in range(3):
+            state = machine.update(decision("unknown", confidence=0.1))
+
+            self.assertEqual(state.stable_behavior, "standing")
+            self.assertEqual(state.transition_reason, "held")
+            self.assertEqual(state.raw_behavior, "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
