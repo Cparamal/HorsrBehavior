@@ -50,12 +50,16 @@ class BehaviorStateMachine:
             if self.exit_count >= needed:
                 old = self.stable_behavior
                 self.stable_behavior = self.config.default_behavior
+                self.pending_behavior = self.config.default_behavior
+                self.pending_count = 0
                 self.state_age_frames = 0
                 self.exit_count = 0
                 transition = f"exited:{old}"
             else:
                 self.state_age_frames += 1
             return self._result(decision, transition)
+
+        self.exit_count = 0
 
         if raw != self.pending_behavior:
             self.pending_behavior = raw

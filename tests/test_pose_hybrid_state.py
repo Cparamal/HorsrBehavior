@@ -30,6 +30,34 @@ class PoseHybridStateTests(unittest.TestCase):
         self.assertEqual(second.stable_behavior, "standing")
         self.assertEqual(second.transition_reason, "exited:eating")
 
+    def test_exit_resets_pending_behavior_before_reentry(self):
+        machine = BehaviorStateMachine(StateMachineConfig(enter_frames={"eating": 2}, exit_frames={"eating": 1}, default_behavior="standing"))
+        machine.update(decision("eating"))
+        machine.update(decision("eating"))
+        machine.update(decision("standing"))
+
+        state = machine.update(decision("eating"))
+
+        self.assertEqual(state.stable_behavior, "standing")
+        self.assertEqual(state.transition_reason, "held")
+
+    def test_exit_requires_consecutive_default_frames(self):
+        machine = BehaviorStateMachine(
+            StateMachineConfig(
+                enter_frames={"eating": 1, "drinking": 2},
+                exit_frames={"eating": 2},
+                default_behavior="standing",
+            )
+        )
+        machine.update(decision("eating"))
+
+        machine.update(decision("standing"))
+        machine.update(decision("drinking"))
+        state = machine.update(decision("standing"))
+
+        self.assertEqual(state.stable_behavior, "eating")
+        self.assertEqual(state.transition_reason, "held")
+
     def test_unknown_does_not_immediately_clear_stable_behavior(self):
         machine = BehaviorStateMachine(StateMachineConfig(enter_frames={"drinking": 1}, exit_frames={"drinking": 3}, default_behavior="standing"))
         machine.update(decision("drinking"))
