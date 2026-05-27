@@ -56,6 +56,8 @@ class BehaviorStateMachine:
                 self.exit_count = 0
                 transition = f"exited:{old}"
             else:
+                self.pending_behavior = self.config.default_behavior
+                self.pending_count = 0
                 self.state_age_frames += 1
             return self._result(decision, transition)
 

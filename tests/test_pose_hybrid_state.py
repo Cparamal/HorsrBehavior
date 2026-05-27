@@ -58,6 +58,28 @@ class PoseHybridStateTests(unittest.TestCase):
         self.assertEqual(state.stable_behavior, "eating")
         self.assertEqual(state.transition_reason, "held")
 
+    def test_default_frame_resets_pending_non_default_entry(self):
+        machine = BehaviorStateMachine(
+            StateMachineConfig(
+                enter_frames={"eating": 1, "drinking": 2},
+                exit_frames={"eating": 3},
+                default_behavior="standing",
+            )
+        )
+        machine.update(decision("eating"))
+
+        machine.update(decision("drinking"))
+        machine.update(decision("standing"))
+        state = machine.update(decision("drinking"))
+
+        self.assertEqual(state.stable_behavior, "eating")
+        self.assertEqual(state.transition_reason, "held")
+
+        state = machine.update(decision("drinking"))
+
+        self.assertEqual(state.stable_behavior, "drinking")
+        self.assertEqual(state.transition_reason, "entered:drinking")
+
     def test_unknown_does_not_immediately_clear_stable_behavior(self):
         machine = BehaviorStateMachine(StateMachineConfig(enter_frames={"drinking": 1}, exit_frames={"drinking": 3}, default_behavior="standing"))
         machine.update(decision("drinking"))
