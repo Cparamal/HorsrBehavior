@@ -14,6 +14,17 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 BEHAVIOR_PRIORITY = ["躺卧", "坐下", "吃饭", "低头喝", "低头", "站立", "未知"]
+BEHAVIOR_DISPLAY_NAMES = {
+    "standing": "站立",
+    "eating": "吃饭",
+    "drinking": "低头喝",
+    "head_down": "低头",
+    "lying": "躺卧",
+    "sitting": "坐下",
+    "lying_horse": "躺卧",
+    "sitting_horse": "坐下",
+    "unknown": "未知",
+}
 DEFAULT_MODEL = "runs/detect/runs/detect/horse_behavior_yolo/weights/best.pt"
 FONT_CANDIDATES = [
     Path("C:/Windows/Fonts/msyh.ttc"),
@@ -278,10 +289,12 @@ def classify_behavior(
             _, horse_y1, _, horse_y2 = horse.xyxy
             if head_low_in_horse(head, horse, head_down_ratio):
                 return "低头"
-            if head_near_horse_front_edge(head, horse, front_head_margin_ratio, top_head_margin_ratio) and box_contains_point(
-                horse.xyxy,
-                box_center(head.xyxy),
-            ):
+            if head_near_horse_front_edge(
+                head,
+                horse,
+                front_head_margin_ratio,
+                top_head_margin_ratio,
+            ) and box_contains_point(horse.xyxy, box_center(head.xyxy)):
                 return "低头"
 
     if horse is not None:
@@ -345,10 +358,12 @@ def explain_behavior(
         if horse is not None:
             if head_low_in_horse(head, horse, head_down_ratio):
                 return BehaviorExplanation("低头", "head_low", horse, head, None, None, detections)
-            if head_near_horse_front_edge(head, horse, front_head_margin_ratio, top_head_margin_ratio) and box_contains_point(
-                horse.xyxy,
-                box_center(head.xyxy),
-            ):
+            if head_near_horse_front_edge(
+                head,
+                horse,
+                front_head_margin_ratio,
+                top_head_margin_ratio,
+            ) and box_contains_point(horse.xyxy, box_center(head.xyxy)):
                 return BehaviorExplanation("低头", "head_front_edge", horse, head, None, None, detections)
 
     if horse is not None:
@@ -434,6 +449,10 @@ def load_feed_regions(path: Path | None) -> list[tuple[float, float, float, floa
     return load_regions(path)
 
 
+def behavior_display_name(behavior: str) -> str:
+    return BEHAVIOR_DISPLAY_NAMES.get(behavior, behavior)
+
+
 def draw_label(frame, text: str, origin: tuple[int, int], color=(30, 180, 80)) -> None:
     x, y = origin
     if needs_pil_text(text):
@@ -458,15 +477,30 @@ def draw_label(frame, text: str, origin: tuple[int, int], color=(30, 180, 80)) -
     cv2.putText(frame, text, (x + 6, y), font, scale, (0, 0, 0), thickness, cv2.LINE_AA)
 
 
-def draw_decision(frame, decision: FrameDecision) -> None:
-    horse = decision.horse
+def draw_clean_behavior_box(frame, horse: Detection | None, behavior: str, color=(30, 180, 80)) -> None:
+    label = f"行为：{behavior_display_name(behavior)}"
     if horse is not None:
         x1, y1, x2, y2 = [int(round(v)) for v in horse.xyxy]
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (30, 180, 80), 3)
-        label_y = max(32, y1 - 8)
-        draw_label(frame, f"行为：{decision.behavior}", (max(8, x1), label_y))
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+        draw_label(frame, label, (max(8, x1), max(32, y1 - 8)), color=color)
     else:
-        draw_label(frame, f"行为：{decision.behavior}", (20, 40), color=(80, 160, 230))
+        draw_label(frame, label, (20, 40), color=(80, 160, 230))
+
+
+def draw_decision(
+    frame,
+    decision: FrameDecision,
+    debug: bool = False,
+    explanation: BehaviorExplanation | None = None,
+    feed_regions: list[tuple[float, float, float, float]] | None = None,
+) -> None:
+    if debug and explanation is not None:
+        draw_debug_overlay(frame, explanation, feed_regions)
+        draw_label(frame, f"最终：{behavior_display_name(decision.behavior)}", (8, 72), color=(40, 210, 210))
+        return
+
+    horse = decision.horse
+    draw_clean_behavior_box(frame, horse, decision.behavior)
 
 
 def draw_debug_overlay(
@@ -614,7 +648,26 @@ def run_video(
                 break
             result = model.predict(frame, imgsz=args.imgsz, conf=effective_model_conf(args), verbose=False)[0]
             decision = decide_frame(result, (width, height), effective_model_conf(args), smoother, feed_regions, args)
-            draw_decision(frame, decision)
+            explanation = None
+            if args.debug:
+                explanation = explain_behavior(
+                    decision.detections,
+                    image_size=(width, height),
+                    feed_regions=feed_regions,
+                    eating_threshold_inside=args.eating_threshold_inside,
+                    eating_threshold_outside=args.eating_threshold_outside,
+                    drinking_threshold=args.drinking_threshold,
+                    head_down_ratio=args.head_down_ratio,
+                    min_grass_conf=args.min_grass_conf,
+                    min_feed_region_grass_conf=args.min_feed_region_grass_conf,
+                    min_overlap_grass_conf=args.min_overlap_grass_conf,
+                    min_grass_overlap_ratio=args.min_grass_overlap_ratio,
+                    min_water_conf=args.min_water_conf,
+                    min_pose_conf=args.min_pose_conf,
+                    front_head_margin_ratio=args.front_head_margin_ratio,
+                    top_head_margin_ratio=args.top_head_margin_ratio,
+                )
+            draw_decision(frame, decision, debug=args.debug, explanation=explanation, feed_regions=feed_regions)
             if writer is not None:
                 writer.write(frame)
             if not args.no_display:
@@ -663,7 +716,26 @@ def run_images(
         height, width = frame.shape[:2]
         result = model.predict(frame, imgsz=args.imgsz, conf=effective_model_conf(args), verbose=False)[0]
         decision = decide_frame(result, (width, height), effective_model_conf(args), smoother, feed_regions, args)
-        draw_decision(frame, decision)
+        explanation = None
+        if args.debug:
+            explanation = explain_behavior(
+                decision.detections,
+                image_size=(width, height),
+                feed_regions=feed_regions,
+                eating_threshold_inside=args.eating_threshold_inside,
+                eating_threshold_outside=args.eating_threshold_outside,
+                drinking_threshold=args.drinking_threshold,
+                head_down_ratio=args.head_down_ratio,
+                min_grass_conf=args.min_grass_conf,
+                min_feed_region_grass_conf=args.min_feed_region_grass_conf,
+                min_overlap_grass_conf=args.min_overlap_grass_conf,
+                min_grass_overlap_ratio=args.min_grass_overlap_ratio,
+                min_water_conf=args.min_water_conf,
+                min_pose_conf=args.min_pose_conf,
+                front_head_margin_ratio=args.front_head_margin_ratio,
+                top_head_margin_ratio=args.top_head_margin_ratio,
+            )
+        draw_decision(frame, decision, debug=args.debug, explanation=explanation, feed_regions=feed_regions)
         out_path = output_dir / image_path.name
         cv2.imwrite(str(out_path), frame)
         print(f"{image_path.name}: {decision.behavior}")

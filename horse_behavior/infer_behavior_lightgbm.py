@@ -14,7 +14,9 @@ from horse_behavior.behavior_features import extract_behavior_features
 from horse_behavior.infer_behavior import (
     DEFAULT_MODEL,
     Detection,
+    behavior_display_name,
     detections_from_result,
+    draw_clean_behavior_box,
     draw_label,
     effective_model_conf,
     load_feed_regions,
@@ -115,7 +117,11 @@ def decide_lightgbm_frame(
     )
 
 
-def draw_lightgbm_decision(frame, decision: LightGBMFrameDecision) -> None:
+def draw_lightgbm_decision(frame, decision: LightGBMFrameDecision, debug: bool = False) -> None:
+    if not debug:
+        draw_clean_behavior_box(frame, decision.horse, decision.behavior)
+        return
+
     colors = {
         "horse": (30, 180, 80),
         "head": (80, 160, 230),
@@ -138,7 +144,7 @@ def draw_lightgbm_decision(frame, decision: LightGBMFrameDecision) -> None:
             cv2.LINE_AA,
         )
 
-    label = f"行为：{decision.behavior} {decision.confidence:.2f}"
+    label = f"行为：{behavior_display_name(decision.behavior)} {decision.confidence:.2f}"
     if decision.horse is not None:
         x1, y1, x2, y2 = [int(round(v)) for v in decision.horse.xyxy]
         cv2.rectangle(frame, (x1, y1), (x2, y2), (30, 180, 80), 3)
@@ -220,7 +226,7 @@ def run_video(args, yolo_model, behavior_model, label_encoder, feature_columns, 
                 feed_regions=feed_regions,
                 smoother=smoother,
             )
-            draw_lightgbm_decision(frame, decision)
+            draw_lightgbm_decision(frame, decision, debug=args.debug)
             writer.write(frame)
             if csv_writer:
                 write_csv_row(csv_writer, frame_index, fps, decision)
@@ -265,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size.")
     parser.add_argument("--max-frames", type=int, default=1800, help="Maximum frames to process.")
     parser.add_argument("--smooth-window", type=int, default=15, help="Average LightGBM probabilities over this many recent frames.")
+    parser.add_argument("--debug", action="store_true", help="Draw all YOLO detections and model confidence.")
     parser.add_argument("--no-display", action="store_true", help="Do not open a realtime preview window.")
     parser.add_argument("--display-scale", type=float, default=0.5, help="Realtime preview scale.")
     return parser

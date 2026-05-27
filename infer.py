@@ -5,7 +5,7 @@ from horse_behavior import infer_behavior_lightgbm
 from horse_behavior import infer_behavior_yolo_roi_cls
 
 #.\.venv\Scripts\python.exe infer.py --method rules --source video/stable_20260522_155032.mp4 --output outputs/rules_video --max-frames 1800 --no-display
-
+# .\.venv\Scripts\python.exe infer_roi_rules.py  --source video/stable_20260522_155032.mp4 --output outputs/roi_with_rulues__video.mp4 --max-frames 18000 --no-display
 
 def _parse_with_method_parser(argv: list[str] | None):
     argv = list(argv or sys.argv[1:])

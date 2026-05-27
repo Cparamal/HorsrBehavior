@@ -10,7 +10,9 @@ from horse_behavior.behavior_roi import crop_behavior_roi
 from horse_behavior.infer_behavior import (
     DEFAULT_MODEL,
     Detection,
+    behavior_display_name,
     detections_from_result,
+    draw_clean_behavior_box,
     draw_label,
     effective_model_conf,
     resize_for_display,
@@ -76,7 +78,11 @@ def classify_roi_frame(
     )
 
 
-def draw_yolo_roi_cls_decision(frame, decision: YoloRoiClsDecision) -> None:
+def draw_yolo_roi_cls_decision(frame, decision: YoloRoiClsDecision, debug: bool = False) -> None:
+    if not debug:
+        draw_clean_behavior_box(frame, decision.horse, decision.behavior)
+        return
+
     colors = {
         "horse": (30, 180, 80),
         "head": (80, 160, 230),
@@ -101,7 +107,7 @@ def draw_yolo_roi_cls_decision(frame, decision: YoloRoiClsDecision) -> None:
 
     rx1, ry1, rx2, ry2 = decision.roi_box
     cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 220, 220), 3)
-    label = f"ROI YOLO分类：{decision.behavior} {decision.confidence:.2f}"
+    label = f"ROI YOLO分类：{behavior_display_name(decision.behavior)} {decision.confidence:.2f}"
     draw_label(frame, label, (max(8, rx1), max(32, ry1 - 8)), color=(0, 220, 220))
 
 
@@ -172,7 +178,7 @@ def run_video(args, det_model, cls_model) -> int:
                 cls_imgsz=args.cls_imgsz,
                 crop_padding=args.crop_padding,
             )
-            draw_yolo_roi_cls_decision(frame, decision)
+            draw_yolo_roi_cls_decision(frame, decision, debug=args.debug)
             writer.write(frame)
             if csv_writer:
                 write_csv_row(csv_writer, frame_index, fps, decision)
@@ -215,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cls-imgsz", type=int, default=224, help="YOLO classification image size.")
     parser.add_argument("--crop-padding", type=float, default=0.15, help="Padding ratio around selected horse ROI.")
     parser.add_argument("--max-frames", type=int, default=1800, help="Maximum frames to process.")
+    parser.add_argument("--debug", action="store_true", help="Draw all YOLO detections and the ROI crop box.")
     parser.add_argument("--no-display", action="store_true", help="Do not open a realtime preview window.")
     parser.add_argument("--display-scale", type=float, default=0.5, help="Realtime preview scale.")
     return parser
