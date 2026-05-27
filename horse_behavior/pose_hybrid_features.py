@@ -132,7 +132,6 @@ def keypoints_to_json(pose: Core6Pose | None) -> str:
 
 
 def extract_pose_hybrid_features(
-    *,
     pose: Core6Pose | None,
     detections: list[Detection],
     image_size: tuple[int, int],
@@ -141,6 +140,7 @@ def extract_pose_hybrid_features(
     frame_index: int,
     fps: float,
     previous: PoseFeatureMemory | None,
+    keypoint_threshold: float = 0.35,
 ) -> PoseFeatureResult:
     if pose is None:
         missing_count = (previous.pose_missing_count if previous is not None else 0) + 1
@@ -158,9 +158,9 @@ def extract_pose_hybrid_features(
     horse_width = max(1.0, x2 - x1)
     horse_height = max(1.0, y2 - y1)
     horse = Detection("horse", float(pose.confidence), pose.bbox_xyxy)
-    nose = _visible_point(pose, "nose")
-    jaw = _visible_point(pose, "jaw")
-    neck_end = _visible_point(pose, "neck_end")
+    nose = _visible_point(pose, "nose", keypoint_threshold)
+    jaw = _visible_point(pose, "jaw", keypoint_threshold)
+    neck_end = _visible_point(pose, "neck_end", keypoint_threshold)
     grass = _nearest_detection_to_point([d for d in detections if d.name == "grass"], nose)
     water = _nearest_detection_to_point([d for d in detections if d.name == "water"], nose)
 
@@ -184,7 +184,7 @@ def extract_pose_hybrid_features(
     )
 
     for name in CORE6_NAMES:
-        row[f"{name}_visible"] = int(_visible_point(pose, name) is not None)
+        row[f"{name}_visible"] = int(_visible_point(pose, name, keypoint_threshold) is not None)
 
     if nose is not None:
         row.update(
@@ -198,7 +198,7 @@ def extract_pose_hybrid_features(
                 "nose_speed": _point_speed(nose, previous.nose if previous else None, frame_index, previous.frame_index if previous else None, fps),
             }
         )
-        backline_y = _backline_y_at_x(pose, nose[0])
+        backline_y = _backline_y_at_x(pose, nose[0], keypoint_threshold)
         if backline_y is not None:
             row["nose_backline_y_diff"] = (backline_y - nose[1]) / horse_height
 
@@ -212,9 +212,9 @@ def extract_pose_hybrid_features(
     if nose is not None and jaw is not None:
         row["head_vector_angle"] = _line_angle(jaw, nose)
 
-    withers = _visible_point(pose, "withers")
-    mid_back = _visible_point(pose, "mid_back")
-    croup = _visible_point(pose, "croup")
+    withers = _visible_point(pose, "withers", keypoint_threshold)
+    mid_back = _visible_point(pose, "mid_back", keypoint_threshold)
+    croup = _visible_point(pose, "croup", keypoint_threshold)
     if withers is not None and croup is not None:
         row["backline_angle"] = _line_angle(withers, croup)
     row["backline_flatness"] = _backline_flatness([withers, mid_back, croup])
@@ -261,9 +261,9 @@ def _box_area(box: tuple[float, float, float, float]) -> float:
     return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
-def _visible_point(pose: Core6Pose, name: str) -> tuple[float, float] | None:
+def _visible_point(pose: Core6Pose, name: str, keypoint_threshold: float = 0.35) -> tuple[float, float] | None:
     point = pose.keypoints[CORE6_INDEX[name]]
-    if float(point[2]) <= 0.0:
+    if float(point[2]) < keypoint_threshold:
         return None
     return (float(point[0]), float(point[1]))
 
@@ -333,9 +333,9 @@ def _point_speed(
     return math.hypot(point[0] - previous_point[0], point[1] - previous_point[1]) * fps / frame_delta
 
 
-def _backline_y_at_x(pose: Core6Pose, x: float) -> float | None:
-    withers = _visible_point(pose, "withers")
-    croup = _visible_point(pose, "croup")
+def _backline_y_at_x(pose: Core6Pose, x: float, keypoint_threshold: float = 0.35) -> float | None:
+    withers = _visible_point(pose, "withers", keypoint_threshold)
+    croup = _visible_point(pose, "croup", keypoint_threshold)
     if withers is None or croup is None:
         return None
     if abs(croup[0] - withers[0]) < 1e-9:

@@ -7,6 +7,7 @@ from horse_behavior.infer_behavior import Detection
 from horse_behavior.pose_hybrid_features import (
     CORE6_NAMES,
     Core6Pose,
+    POSE_HYBRID_FEATURE_COLUMNS,
     PoseFeatureMemory,
     extract_pose_hybrid_features,
     keypoints_to_json,
@@ -47,6 +48,42 @@ class Result:
     keypoints = Keypoints()
 
 
+class LowConfidenceBoxes:
+    def __init__(self):
+        import torch
+
+        self.xyxy = torch.tensor([[10.0, 20.0, 210.0, 120.0]])
+        self.conf = torch.tensor([0.20])
+
+
+class LowConfidenceResult:
+    boxes = LowConfidenceBoxes()
+    keypoints = Keypoints()
+
+
+class NonCore6Keypoints:
+    def __init__(self):
+        import torch
+
+        self.xy = torch.tensor(
+            [
+                [
+                    [40.0, 95.0],
+                    [55.0, 90.0],
+                    [85.0, 55.0],
+                    [105.0, 50.0],
+                    [150.0, 52.0],
+                ]
+            ]
+        )
+        self.conf = torch.tensor([[0.91, 0.86, 0.77, 0.88, 0.82]])
+
+
+class NonCore6Result:
+    boxes = Boxes()
+    keypoints = NonCore6Keypoints()
+
+
 def make_pose(nose=(40.0, 95.0), confidence=0.9):
     keypoints = np.array(
         [
@@ -70,6 +107,15 @@ class PoseHybridFeatureTests(unittest.TestCase):
         self.assertEqual(len(poses), 1)
         self.assertEqual(poses[0].keypoints.shape, (6, 3))
         self.assertAlmostEqual(poses[0].keypoints[0, 0], 40.0)
+
+    def test_pose_instances_from_result_filters_by_min_pose_conf(self):
+        poses = pose_instances_from_result(LowConfidenceResult(), min_pose_conf=0.25)
+
+        self.assertEqual(poses, [])
+
+    def test_pose_instances_from_result_rejects_non_core6_shape(self):
+        with self.assertRaisesRegex(RuntimeError, f"Expected {len(CORE6_NAMES)} keypoints, got 5"):
+            pose_instances_from_result(NonCore6Result(), min_pose_conf=0.25)
 
     def test_select_main_pose_prefers_confidence_then_area(self):
         small = Core6Pose((0.0, 0.0, 50.0, 50.0), 0.8, make_pose().keypoints)
@@ -102,6 +148,20 @@ class PoseHybridFeatureTests(unittest.TestCase):
         self.assertEqual(row["water_exists"], 0)
         self.assertEqual(result.horse.name, "horse")
 
+    def test_extract_features_returns_exact_pose_hybrid_columns(self):
+        result = extract_pose_hybrid_features(
+            pose=make_pose(),
+            detections=[],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertEqual(list(result.row), POSE_HYBRID_FEATURE_COLUMNS)
+
     def test_extract_features_uses_previous_memory_for_speed(self):
         previous = PoseFeatureMemory(
             nose=(30.0, 95.0),
@@ -123,6 +183,25 @@ class PoseHybridFeatureTests(unittest.TestCase):
 
         self.assertAlmostEqual(result.row["nose_speed"], 250.0)
         self.assertEqual(result.memory.pose_missing_count, 0)
+
+    def test_extract_features_accepts_positional_call_and_keypoint_threshold(self):
+        pose = make_pose()
+
+        result = extract_pose_hybrid_features(
+            pose,
+            [],
+            (240, 140),
+            [],
+            [],
+            5,
+            25.0,
+            None,
+            keypoint_threshold=0.95,
+        )
+
+        self.assertEqual(result.row["pose_exists"], 1)
+        self.assertEqual(result.row["nose_visible"], 0)
+        self.assertEqual(result.row["nose_box_x_ratio"], -1.0)
 
     def test_missing_pose_returns_numeric_defaults(self):
         result = extract_pose_hybrid_features(
