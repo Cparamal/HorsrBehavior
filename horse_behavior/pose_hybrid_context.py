@@ -29,6 +29,9 @@ class DetectionContextCache:
     def current(self, frame_index: int) -> list[Detection]:
         if self.updated_frame_index is None:
             return []
-        if int(frame_index) - self.updated_frame_index > max(0, int(self.ttl_frames)):
+        frame_age = int(frame_index) - self.updated_frame_index
+        if frame_age < 0:
+            return []
+        if frame_age > max(0, int(self.ttl_frames)):
             return []
         return list(self.detections)
