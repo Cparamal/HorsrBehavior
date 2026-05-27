@@ -8,6 +8,8 @@ import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 
+from horse_behavior.pose_hybrid_features import POSE_HYBRID_FEATURE_COLUMNS
+
 
 TARGET_COLUMNS = ["split", "image", "label"]
 DEFAULT_TRAIN_FEATURES = "dataset/pose_behavior_features/train_features.csv"
@@ -39,7 +41,10 @@ def load_feature_csv(path: Path) -> pd.DataFrame:
 
 
 def feature_columns_from_frame(frame: pd.DataFrame) -> list[str]:
-    return [column for column in frame.columns if column not in TARGET_COLUMNS]
+    missing = [column for column in POSE_HYBRID_FEATURE_COLUMNS if column not in frame.columns]
+    if missing:
+        raise RuntimeError(f"Missing pose feature columns: {', '.join(missing)}")
+    return list(POSE_HYBRID_FEATURE_COLUMNS)
 
 
 def build_label_encoder(classes_path: Path | None, labels: list[str] | None = None) -> LabelEncoder:
@@ -59,6 +64,9 @@ def build_label_encoder(classes_path: Path | None, labels: list[str] | None = No
 
 
 def validate_frames(train_df: pd.DataFrame, val_df: pd.DataFrame, feature_columns: list[str], encoder: LabelEncoder) -> None:
+    if not feature_columns:
+        raise RuntimeError("No usable pose feature columns were found")
+
     val_feature_columns = feature_columns_from_frame(val_df)
     if val_feature_columns != feature_columns:
         raise RuntimeError("Train and validation feature columns differ")
