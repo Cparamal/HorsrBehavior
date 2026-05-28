@@ -18,7 +18,7 @@ from horse_behavior.infer_behavior_pose_hybrid import (
     write_csv_row,
 )
 from horse_behavior.pose_hybrid_context import DetectionContextCache
-from horse_behavior.pose_hybrid_fusion import FusedPoseDecision
+from horse_behavior.pose_hybrid_fusion import FusedPoseDecision, ModelSignal
 from horse_behavior.pose_hybrid_rules import RuleSignal
 from horse_behavior.pose_hybrid_state import BehaviorStateMachine, StateMachineConfig
 from horse_behavior.pose_hybrid_state import StableBehaviorDecision
@@ -226,11 +226,35 @@ class InferBehaviorPoseHybridTests(unittest.TestCase):
 
 class InferBehaviorPoseHybridCliTests(unittest.TestCase):
     def test_parser_defaults_to_realtime_pose_hybrid_paths(self):
-        parsed = build_parser().parse_args(["--source", "video/a.mp4", "--no-display", "--rules-only"])
+        parsed = build_parser().parse_args([])
 
         self.assertEqual(parsed.pose_model, "runs/pose/horse_pose_yolo_core6_crop/weights/best.pt")
+        self.assertEqual(parsed.det_model, "runs/detect/runs/detect/horse_behavior_yolo/weights/best.pt")
+        self.assertEqual(parsed.behavior_model, "runs/behavior_pose_hybrid/lightgbm_pose_behavior.joblib")
+        self.assertEqual(parsed.label_encoder, "runs/behavior_pose_hybrid/label_encoder.joblib")
+        self.assertEqual(parsed.feature_columns, "runs/behavior_pose_hybrid/feature_columns.txt")
+        self.assertEqual(parsed.source, "video/stable_20260523_105109.mp4")
+        self.assertEqual(parsed.output, "outputs/behavior_pose_hybrid.mp4")
+        self.assertEqual(parsed.csv, "outputs/behavior_pose_hybrid.csv")
+        self.assertEqual(parsed.feed_regions, "config/feed_regions.yaml")
+        self.assertEqual(parsed.water_regions, "")
+        self.assertEqual(parsed.pose_imgsz, 640)
+        self.assertEqual(parsed.pose_conf, 0.25)
+        self.assertEqual(parsed.det_imgsz, 640)
+        self.assertEqual(parsed.conf, 0.25)
+        self.assertEqual(parsed.model_conf, 0.05)
+        self.assertEqual(parsed.min_grass_conf, 0.18)
+        self.assertEqual(parsed.min_feed_region_grass_conf, 0.10)
+        self.assertEqual(parsed.min_overlap_grass_conf, 0.05)
         self.assertEqual(parsed.det_interval, 8)
-        self.assertTrue(parsed.rules_only)
+        self.assertEqual(parsed.det_ttl, 25)
+        self.assertEqual(parsed.keypoint_threshold, 0.35)
+        self.assertEqual(parsed.max_frames, 1800)
+        self.assertFalse(parsed.rules_only)
+        self.assertFalse(parsed.no_detector)
+        self.assertFalse(parsed.debug)
+        self.assertFalse(parsed.no_display)
+        self.assertEqual(parsed.display_scale, 0.5)
 
     def test_non_debug_draws_only_horse_box_and_final_behavior(self):
         frame = np.zeros((160, 260, 3), dtype=np.uint8)
@@ -259,7 +283,7 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
                 decision=FusedPoseDecision("eating", 0.91, "agreement", "test", "eating", "eating", {"eating": 0.91}),
                 stable=StableBehaviorDecision("eating", "eating", 0.91, "eating", 2, "held"),
                 rule_signal=RuleSignal("eating", "nose_near_feed", 0.9, "strong"),
-                model_signal=None,
+                model_signal=ModelSignal("eating", 0.8765, {"eating": 0.8765, "standing": 0.1235}),
                 pose=None,
                 horse=Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
                 detections=[],
@@ -276,6 +300,8 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual(rows[0]["behavior"], "eating")
             self.assertEqual(rows[0]["rule_behavior"], "eating")
+            self.assertEqual(rows[0]["model_behavior"], "eating")
+            self.assertEqual(rows[0]["model_confidence"], "0.8765")
             self.assertEqual(rows[0]["pose_ms"], "1.000")
 
 
