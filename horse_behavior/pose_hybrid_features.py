@@ -157,6 +157,7 @@ def extract_pose_hybrid_features(
     x1, y1, x2, y2 = pose.bbox_xyxy
     horse_width = max(1.0, x2 - x1)
     horse_height = max(1.0, y2 - y1)
+    horse_scale = max(horse_width, horse_height)
     horse = Detection("horse", float(pose.confidence), pose.bbox_xyxy)
     nose = _visible_point(pose, "nose", keypoint_threshold)
     jaw = _visible_point(pose, "jaw", keypoint_threshold)
@@ -193,8 +194,8 @@ def extract_pose_hybrid_features(
                 "nose_box_y_ratio": (nose[1] - y1) / horse_height,
                 "nose_in_feed_region": int(point_in_regions(nose, feed_regions)),
                 "nose_in_water_region": int(point_in_regions(nose, water_regions)),
-                "nose_to_feed_distance": _distance_to_regions_or_box(nose, feed_regions, grass),
-                "nose_to_water_distance": _distance_to_regions_or_box(nose, water_regions, water),
+                "nose_to_feed_distance": _normalized_distance_to_regions_or_box(nose, feed_regions, grass, horse_scale),
+                "nose_to_water_distance": _normalized_distance_to_regions_or_box(nose, water_regions, water, horse_scale),
                 "nose_speed": _point_speed(nose, previous.nose if previous else None, frame_index, previous.frame_index if previous else None, fps),
             }
         )
@@ -315,6 +316,18 @@ def _distance_to_regions_or_box(
     if not distances:
         return -1.0
     return min(distances)
+
+
+def _normalized_distance_to_regions_or_box(
+    point: tuple[float, float],
+    regions: list[tuple[float, float, float, float]],
+    detection: Detection | None,
+    scale: float,
+) -> float:
+    distance = _distance_to_regions_or_box(point, regions, detection)
+    if distance < 0.0:
+        return distance
+    return distance / max(1.0, scale)
 
 
 def _point_speed(

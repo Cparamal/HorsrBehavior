@@ -203,6 +203,53 @@ class PoseHybridFeatureTests(unittest.TestCase):
         self.assertEqual(row["water_exists"], 0)
         self.assertEqual(result.horse.name, "horse")
 
+    def test_feed_distance_is_normalized_by_horse_scale_for_nearby_detection(self):
+        pose = make_pose(nose=(40.0, 95.0))
+
+        result = extract_pose_hybrid_features(
+            pose=pose,
+            detections=[Detection("grass", 0.8, (50.0, 85.0, 70.0, 105.0))],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertAlmostEqual(result.row["nose_to_feed_distance"], 0.05)
+
+    def test_water_distance_is_normalized_by_horse_scale_for_nearby_region(self):
+        pose = make_pose(nose=(40.0, 95.0))
+
+        result = extract_pose_hybrid_features(
+            pose=pose,
+            detections=[],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[(50.0, 85.0, 70.0, 105.0)],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertAlmostEqual(result.row["nose_to_water_distance"], 0.05)
+
+    def test_context_distances_preserve_missing_sentinel_when_no_context_exists(self):
+        result = extract_pose_hybrid_features(
+            pose=make_pose(),
+            detections=[],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertEqual(result.row["nose_to_feed_distance"], -1.0)
+        self.assertEqual(result.row["nose_to_water_distance"], -1.0)
+
     def test_backline_flatness_preserves_missing_sentinel(self):
         pose = make_pose()
         pose.keypoints[4, 2] = 0.10
