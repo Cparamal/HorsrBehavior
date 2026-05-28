@@ -189,6 +189,7 @@ config/
 | 规则判断 | `rules` | 使用 YOLO 检测框和人工规则判断行为，适合做可解释 baseline。 |
 | LightGBM | `lightgbm` | 使用 YOLO 检测框提取结构化特征，再用 LightGBM 分类。当前推荐作为主对比模型。 |
 | ROI YOLO 分类 | `roi-yolo` | 先用 YOLO 检测马体框，裁剪 ROI，再用 YOLO 分类器判断行为。 |
+| Pose Hybrid 姿态混合 | `pose-hybrid` | 使用姿态关键点、环境检测、规则状态机和可选 LightGBM 融合判断行为。 |
 
 ### 通用参数
 
@@ -243,6 +244,23 @@ config/
 | `--cls-model` | `runs/behavior_yolo_roi_cls/horse_behavior_yolo_roi_cls/weights/best.pt` | ROI 行为分类器权重。 |
 | `--crop-padding` | `0.15` | 马体检测框外扩比例，裁剪 ROI 时使用。 |
 | `--cls-imgsz` | `224` | ROI 分类器输入尺寸。 |
+
+### Pose Hybrid 姿态混合推理
+
+```powershell
+.\.venv\Scripts\python.exe infer.py `
+  --method pose-hybrid `
+  --pose-model runs/pose/horse_pose_yolo_core6_crop/weights/best.pt `
+  --source video/stable_20260523_105109.mp4 `
+  --output outputs/behavior_pose_hybrid_1800.mp4 `
+  --csv outputs/behavior_pose_hybrid_1800.csv `
+  --max-frames 1800 `
+  --det-interval 8 `
+  --det-ttl 25 `
+  --no-display
+```
+
+在姿态 LightGBM 模型、标签编码器和特征列文件训练完成前，可以加 `--rules-only` 只运行姿态规则和状态机。默认非调试输出只绘制最终行为标签和马体框；需要查看关键点、环境框和规则细节时再加 `--debug`。
 
 ### 规则推理
 
