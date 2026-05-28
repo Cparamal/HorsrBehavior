@@ -46,6 +46,7 @@ DEFAULT_LABEL_ENCODER = "runs/behavior_pose_hybrid/label_encoder.joblib"
 DEFAULT_FEATURE_COLUMNS = "runs/behavior_pose_hybrid/feature_columns.txt"
 DEFAULT_OUTPUT = "outputs/behavior_pose_hybrid.mp4"
 DEFAULT_CSV = "outputs/behavior_pose_hybrid.csv"
+CORE6_SKELETON = ((0, 1), (0, 3), (2, 3), (3, 4), (4, 5))
 
 
 @dataclass
@@ -211,9 +212,16 @@ def write_csv_row(writer, frame_index: int, fps: float, result: PoseHybridFrameR
     )
 
 
-def draw_pose_hybrid_result(frame, result: PoseHybridFrameResult, debug: bool = False) -> None:
+def draw_pose_hybrid_result(
+    frame,
+    result: PoseHybridFrameResult,
+    debug: bool = False,
+    draw_pose: bool = False,
+) -> None:
     if not debug:
         draw_clean_behavior_box(frame, result.horse, result.stable.stable_behavior)
+        if draw_pose:
+            _draw_core6_pose(frame, result.pose)
         return
 
     for detection in result.detections:
@@ -226,10 +234,7 @@ def draw_pose_hybrid_result(frame, result: PoseHybridFrameResult, debug: bool = 
         x1, y1, x2, y2 = [int(round(v)) for v in result.horse.xyxy]
         cv2.rectangle(frame, (x1, y1), (x2, y2), (30, 180, 80), 2)
 
-    if result.pose is not None:
-        for x, y, score in result.pose.keypoints:
-            if float(score) >= 0.10:
-                cv2.circle(frame, (int(round(x)), int(round(y))), 3, (90, 180, 230), -1, cv2.LINE_AA)
+    _draw_core6_pose(frame, result.pose)
 
     label = (
         f"Final:{behavior_display_name(result.stable.stable_behavior)} "
@@ -266,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--no-detector", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--draw-pose", action="store_true", help="Draw core-6 pose keypoints and skeleton on the output.")
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--display-scale", type=float, default=0.5)
     return parser
@@ -310,7 +316,7 @@ def run_video(args, runtime: PoseHybridRuntime) -> int:
                 break
             result = process_frame(frame, frame_index, fps, runtime, args)
             draw_start = time.perf_counter()
-            draw_pose_hybrid_result(frame, result, debug=args.debug)
+            draw_pose_hybrid_result(frame, result, debug=args.debug, draw_pose=args.draw_pose)
             result = PoseHybridFrameResult(
                 decision=result.decision,
                 stable=result.stable,
@@ -435,6 +441,31 @@ def _has_lightgbm_artifacts(runtime: PoseHybridRuntime) -> bool:
         and runtime.label_encoder is not None
         and bool(runtime.feature_columns)
     )
+
+
+def _draw_core6_pose(frame, pose: Core6Pose | None, min_score: float = 0.10) -> None:
+    if pose is None:
+        return
+
+    visible = [float(point[2]) >= min_score for point in pose.keypoints]
+    for start, end in CORE6_SKELETON:
+        if visible[start] and visible[end]:
+            x1, y1 = pose.keypoints[start][:2]
+            x2, y2 = pose.keypoints[end][:2]
+            cv2.line(
+                frame,
+                (int(round(x1)), int(round(y1))),
+                (int(round(x2)), int(round(y2))),
+                (40, 210, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+    for x, y, score in pose.keypoints:
+        if float(score) >= min_score:
+            center = (int(round(x)), int(round(y)))
+            cv2.circle(frame, center, 4, (20, 40, 40), -1, cv2.LINE_AA)
+            cv2.circle(frame, center, 3, (90, 180, 230), -1, cv2.LINE_AA)
 
 
 def _elapsed_ms(start: float) -> float:

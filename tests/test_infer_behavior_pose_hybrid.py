@@ -18,6 +18,7 @@ from horse_behavior.infer_behavior_pose_hybrid import (
     write_csv_row,
 )
 from horse_behavior.pose_hybrid_context import DetectionContextCache
+from horse_behavior.pose_hybrid_features import Core6Pose
 from horse_behavior.pose_hybrid_fusion import FusedPoseDecision, ModelSignal
 from horse_behavior.pose_hybrid_rules import RuleSignal
 from horse_behavior.pose_hybrid_state import BehaviorStateMachine, StateMachineConfig
@@ -253,8 +254,12 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         self.assertFalse(parsed.rules_only)
         self.assertFalse(parsed.no_detector)
         self.assertFalse(parsed.debug)
+        self.assertFalse(parsed.draw_pose)
         self.assertFalse(parsed.no_display)
         self.assertEqual(parsed.display_scale, 0.5)
+
+        with_pose = build_parser().parse_args(["--draw-pose"])
+        self.assertTrue(with_pose.draw_pose)
 
     def test_non_debug_draws_only_horse_box_and_final_behavior(self):
         frame = np.zeros((160, 260, 3), dtype=np.uint8)
@@ -274,6 +279,43 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         draw_pose_hybrid_result(frame, result, debug=False)
 
         self.assertGreater(int(frame[30, 20].sum()), 0)
+        self.assertEqual(int(frame[80, 210].sum()), 0)
+
+    def test_draw_pose_switch_draws_keypoints_and_core6_skeleton(self):
+        frame = np.zeros((160, 260, 3), dtype=np.uint8)
+        pose = Core6Pose(
+            bbox_xyxy=(20.0, 30.0, 200.0, 140.0),
+            confidence=0.9,
+            keypoints=np.array(
+                [
+                    [40.0, 95.0, 0.91],
+                    [55.0, 90.0, 0.86],
+                    [85.0, 55.0, 0.77],
+                    [105.0, 50.0, 0.88],
+                    [150.0, 52.0, 0.82],
+                    [190.0, 58.0, 0.79],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        result = PoseHybridFrameResult(
+            decision=FusedPoseDecision("eating", 0.91, "agreement", "test", "eating", "eating", {"eating": 0.91}),
+            stable=StableBehaviorDecision("eating", "eating", 0.91, "eating", 2, "held"),
+            rule_signal=RuleSignal("eating", "nose_near_feed", 0.9, "strong"),
+            model_signal=None,
+            pose=pose,
+            horse=Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
+            detections=[Detection("grass", 0.9, (210.0, 80.0, 250.0, 130.0))],
+            feature_row={},
+            keypoints_json="[]",
+            timings=StageTimings(1, 0, 0, 0, 0),
+        )
+
+        draw_pose_hybrid_result(frame, result, debug=False, draw_pose=True)
+
+        self.assertGreater(int(frame[95, 40].sum()), 0)
+        self.assertGreater(int(frame[93, 47].sum()), 0)
+        self.assertGreater(int(frame[51, 127].sum()), 0)
         self.assertEqual(int(frame[80, 210].sum()), 0)
 
     def test_csv_writes_behavior_rule_model_and_timing_columns(self):
