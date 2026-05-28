@@ -143,6 +143,71 @@ class InferBehaviorPoseHybridTests(unittest.TestCase):
         self.assertEqual(result.model_signal, None)
         self.assertEqual(result.decision.behavior, "head_down")
 
+    def test_process_frame_rules_only_still_runs_detector_and_uses_grass_context(self):
+        runtime = PoseHybridRuntime(
+            pose_model=FakePoseModel(FakePoseResult()),
+            det_model=FakeDetModel([Detection("grass", 0.9, (30.0, 80.0, 70.0, 120.0))]),
+            behavior_model=None,
+            label_encoder=None,
+            feature_columns=[],
+            feed_regions=[],
+            water_regions=[],
+            context_cache=DetectionContextCache(ttl_frames=25),
+            state_machine=BehaviorStateMachine(StateMachineConfig(enter_frames={"eating": 1}, exit_frames={"eating": 1})),
+            feature_memory=None,
+        )
+        frame = np.zeros((140, 240, 3), dtype=np.uint8)
+        local_args = args()
+        local_args.rules_only = True
+
+        result = process_frame(frame, 0, 25.0, runtime, local_args)
+
+        self.assertEqual(runtime.det_model.calls, 1)
+        self.assertEqual(result.model_signal, None)
+        self.assertEqual(result.decision.behavior, "eating")
+
+    def test_process_frame_missing_model_artifacts_falls_back_to_rules(self):
+        runtime = PoseHybridRuntime(
+            pose_model=FakePoseModel(FakePoseResult()),
+            det_model=FakeDetModel([Detection("grass", 0.9, (30.0, 80.0, 70.0, 120.0))]),
+            behavior_model=None,
+            label_encoder=None,
+            feature_columns=[],
+            feed_regions=[],
+            water_regions=[],
+            context_cache=DetectionContextCache(ttl_frames=25),
+            state_machine=BehaviorStateMachine(StateMachineConfig(enter_frames={"eating": 1}, exit_frames={"eating": 1})),
+            feature_memory=None,
+        )
+        frame = np.zeros((140, 240, 3), dtype=np.uint8)
+
+        result = process_frame(frame, 0, 25.0, runtime, args())
+
+        self.assertEqual(result.model_signal, None)
+        self.assertEqual(result.decision.behavior, "eating")
+        self.assertEqual(result.decision.source, "rules_only")
+
+    def test_process_frame_without_detector_uses_empty_context(self):
+        runtime = PoseHybridRuntime(
+            pose_model=FakePoseModel(FakePoseResult()),
+            det_model=None,
+            behavior_model=FakeModel(),
+            label_encoder=FakeEncoder(),
+            feature_columns=["pose_exists", "nose_box_y_ratio", "grass_exists"],
+            feed_regions=[],
+            water_regions=[],
+            context_cache=DetectionContextCache(ttl_frames=25),
+            state_machine=BehaviorStateMachine(StateMachineConfig(enter_frames={"head_down": 1}, exit_frames={"head_down": 1})),
+            feature_memory=None,
+        )
+        frame = np.zeros((140, 240, 3), dtype=np.uint8)
+
+        result = process_frame(frame, 0, 25.0, runtime, args())
+
+        self.assertEqual(result.detections, [])
+        self.assertEqual(result.feature_row["grass_exists"], 0)
+        self.assertEqual(result.decision.rule_behavior, "head_down")
+
 
 if __name__ == "__main__":
     unittest.main()

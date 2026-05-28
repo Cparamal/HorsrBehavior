@@ -85,13 +85,12 @@ def process_frame(frame, frame_index: int, fps: float, runtime: PoseHybridRuntim
         previous=runtime.feature_memory,
         keypoint_threshold=args.keypoint_threshold,
     )
-    runtime.feature_memory = feature_result.memory
     feature_ms = _elapsed_ms(feature_start)
 
     model_start = time.perf_counter()
     rule_signal = classify_pose_rule(feature_result.row)
     model_signal = None
-    if not args.rules_only:
+    if not args.rules_only and _has_lightgbm_artifacts(runtime):
         model_signal = predict_pose_lightgbm(
             runtime.behavior_model,
             runtime.label_encoder,
@@ -103,6 +102,7 @@ def process_frame(frame, frame_index: int, fps: float, runtime: PoseHybridRuntim
     state_start = time.perf_counter()
     decision = fuse_rule_and_model(rule_signal, model_signal)
     stable = runtime.state_machine.update(decision)
+    runtime.feature_memory = feature_result.memory
     state_ms = _elapsed_ms(state_start)
 
     return PoseHybridFrameResult(
@@ -142,10 +142,18 @@ def write_csv_row(writer, frame_index: int, fps: float, result: PoseHybridFrameR
 
 
 def _context_detections(frame, frame_index: int, runtime: PoseHybridRuntime, args) -> list[Detection]:
-    if runtime.det_model is not None and not args.rules_only and should_run_detector(frame_index, args.det_interval):
+    if runtime.det_model is not None and should_run_detector(frame_index, args.det_interval):
         result = runtime.det_model.predict(frame, imgsz=args.det_imgsz, conf=effective_model_conf(args), verbose=False)[0]
         return runtime.context_cache.update(frame_index, detections_from_result(result, effective_model_conf(args)))
     return runtime.context_cache.current(frame_index)
+
+
+def _has_lightgbm_artifacts(runtime: PoseHybridRuntime) -> bool:
+    return (
+        runtime.behavior_model is not None
+        and runtime.label_encoder is not None
+        and bool(runtime.feature_columns)
+    )
 
 
 def _elapsed_ms(start: float) -> float:
