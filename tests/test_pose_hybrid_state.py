@@ -9,6 +9,13 @@ def decision(behavior, confidence=0.8):
 
 
 class PoseHybridStateTests(unittest.TestCase):
+    def test_default_state_requires_longer_confirmation(self):
+        config = StateMachineConfig()
+
+        self.assertEqual(config.enter_frames["head_down"], 4)
+        self.assertEqual(config.enter_frames["eating"], 6)
+        self.assertEqual(config.enter_frames["standing"], 10)
+
     def test_behavior_enters_after_required_frames(self):
         machine = BehaviorStateMachine(StateMachineConfig(enter_frames={"eating": 2}, exit_frames={"eating": 2}, default_behavior="standing"))
 

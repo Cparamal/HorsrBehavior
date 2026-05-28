@@ -16,6 +16,11 @@ def row(**overrides):
         "nose_to_water_distance": -1.0,
         "nose_in_feed_region": 0,
         "nose_in_water_region": 0,
+        "nose_box_y_ratio": 0.70,
+        "jaw_box_y_ratio": 0.66,
+        "head_vector_angle": 1.20,
+        "jaw_visible": 1,
+        "neck_end_visible": 1,
         "backline_flatness": 0.10,
         "horse_box_aspect_ratio": 0.80,
         "grass_exists": 0,
@@ -50,10 +55,37 @@ class PoseHybridRuleTests(unittest.TestCase):
         self.assertEqual(signal.reason, "flat_back_low_box")
 
     def test_standing_weak_when_head_is_not_low(self):
-        signal = classify_pose_rule(row(nose_backline_y_diff=0.10))
+        signal = classify_pose_rule(row(nose_backline_y_diff=0.10, nose_box_y_ratio=0.30, jaw_box_y_ratio=0.35, head_vector_angle=-0.30))
 
         self.assertEqual(signal.behavior, "standing")
         self.assertEqual(signal.strength, "weak")
+
+    def test_ambiguous_head_pose_is_unknown_not_standing(self):
+        signal = classify_pose_rule(row(nose_backline_y_diff=-0.08, nose_box_y_ratio=0.51, jaw_box_y_ratio=0.50, head_vector_angle=0.10))
+
+        self.assertEqual(signal.behavior, "unknown")
+        self.assertEqual(signal.reason, "ambiguous_head_pose")
+
+    def test_head_down_uses_multiple_pose_signals_when_backline_is_borderline(self):
+        signal = classify_pose_rule(row(nose_backline_y_diff=-0.14, nose_box_y_ratio=0.72, jaw_box_y_ratio=0.68, head_vector_angle=1.00))
+
+        self.assertEqual(signal.behavior, "head_down")
+        self.assertEqual(signal.reason, "head_low_score")
+
+    def test_near_feed_without_head_low_evidence_is_unknown(self):
+        signal = classify_pose_rule(
+            row(
+                nose_backline_y_diff=-0.06,
+                nose_box_y_ratio=0.52,
+                jaw_box_y_ratio=0.50,
+                head_vector_angle=0.10,
+                nose_to_feed_distance=0.04,
+                grass_exists=1,
+            )
+        )
+
+        self.assertEqual(signal.behavior, "unknown")
+        self.assertEqual(signal.reason, "ambiguous_head_pose")
 
     def test_unknown_when_pose_is_missing(self):
         signal = classify_pose_rule(row(pose_exists=0))

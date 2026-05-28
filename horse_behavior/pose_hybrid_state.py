@@ -6,7 +6,7 @@ from horse_behavior.pose_hybrid_fusion import FusedPoseDecision
 @dataclass(frozen=True)
 class StateMachineConfig:
     enter_frames: dict[str, int] = field(
-        default_factory=lambda: {"eating": 6, "drinking": 6, "head_down": 4, "lying": 8, "standing": 8}
+        default_factory=lambda: {"eating": 6, "drinking": 6, "head_down": 4, "lying": 8, "standing": 10}
     )
     exit_frames: dict[str, int] = field(default_factory=lambda: {"eating": 12, "drinking": 12, "head_down": 8, "lying": 20})
     default_behavior: str = "standing"

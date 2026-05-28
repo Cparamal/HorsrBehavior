@@ -34,6 +34,13 @@ def _finite_number(value: object, missing_sentinel: float | None = None) -> floa
 def classify_pose_rule(
     row: dict[str, object],
     head_low_threshold: float = -0.18,
+    head_standing_threshold: float = -0.02,
+    nose_low_ratio_threshold: float = 0.62,
+    nose_standing_ratio_threshold: float = 0.45,
+    jaw_low_ratio_threshold: float = 0.58,
+    jaw_standing_ratio_threshold: float = 0.48,
+    downward_head_angle_threshold: float = 0.70,
+    standing_head_angle_threshold: float = 0.20,
     feed_distance_threshold: float = 0.10,
     water_distance_threshold: float = 0.08,
     lying_flatness_threshold: float = 0.06,
@@ -59,9 +66,28 @@ def classify_pose_rule(
     if not _flag(row.get("nose_visible", 0)) or not has_backline or nose_backline is None:
         return RuleSignal("unknown", "missing_head_pose", 0.0, "weak")
 
-    head_low = nose_backline <= head_low_threshold
+    head_low_score = _head_low_score(
+        row,
+        nose_backline=nose_backline,
+        head_low_threshold=head_low_threshold,
+        nose_low_ratio_threshold=nose_low_ratio_threshold,
+        jaw_low_ratio_threshold=jaw_low_ratio_threshold,
+        downward_head_angle_threshold=downward_head_angle_threshold,
+    )
+    standing_score = _standing_score(
+        row,
+        nose_backline=nose_backline,
+        head_standing_threshold=head_standing_threshold,
+        nose_standing_ratio_threshold=nose_standing_ratio_threshold,
+        jaw_standing_ratio_threshold=jaw_standing_ratio_threshold,
+        standing_head_angle_threshold=standing_head_angle_threshold,
+    )
+
+    head_low = head_low_score >= 3
     if not head_low:
-        return RuleSignal("standing", "pose_default", 0.55, "weak")
+        if standing_score >= 3:
+            return RuleSignal("standing", "head_high_score", 0.58, "weak")
+        return RuleSignal("unknown", "ambiguous_head_pose", 0.0, "weak")
 
     water_distance = _finite_number(row.get("nose_to_water_distance"), missing_sentinel=-1.0)
     if _flag(row.get("water_exists", 0)) or _flag(row.get("nose_in_water_region", 0)):
@@ -79,4 +105,59 @@ def classify_pose_rule(
         ) or _flag(row.get("nose_in_feed_region", 0)):
             return RuleSignal("eating", "nose_near_feed", 0.90, "strong")
 
-    return RuleSignal("head_down", "nose_below_backline", 0.72, "medium")
+    return RuleSignal("head_down", "head_low_score", 0.74, "medium")
+
+
+def _head_low_score(
+    row: dict[str, object],
+    nose_backline: float,
+    head_low_threshold: float,
+    nose_low_ratio_threshold: float,
+    jaw_low_ratio_threshold: float,
+    downward_head_angle_threshold: float,
+) -> int:
+    score = 0
+    if nose_backline <= head_low_threshold:
+        score += 2
+
+    nose_y = _finite_number(row.get("nose_box_y_ratio"), missing_sentinel=-1.0)
+    if nose_y is not None and nose_y >= nose_low_ratio_threshold:
+        score += 1
+
+    jaw_y = _finite_number(row.get("jaw_box_y_ratio"), missing_sentinel=-1.0)
+    if _flag(row.get("jaw_visible", 0)) and jaw_y is not None and jaw_y >= jaw_low_ratio_threshold:
+        score += 1
+
+    head_angle = _finite_number(row.get("head_vector_angle"), missing_sentinel=-1.0)
+    if head_angle is not None and head_angle >= downward_head_angle_threshold:
+        score += 1
+
+    if _flag(row.get("jaw_visible", 0)):
+        score += 1
+    return score
+
+
+def _standing_score(
+    row: dict[str, object],
+    nose_backline: float,
+    head_standing_threshold: float,
+    nose_standing_ratio_threshold: float,
+    jaw_standing_ratio_threshold: float,
+    standing_head_angle_threshold: float,
+) -> int:
+    score = 0
+    if nose_backline >= head_standing_threshold:
+        score += 2
+
+    nose_y = _finite_number(row.get("nose_box_y_ratio"), missing_sentinel=-1.0)
+    if nose_y is not None and nose_y <= nose_standing_ratio_threshold:
+        score += 1
+
+    jaw_y = _finite_number(row.get("jaw_box_y_ratio"), missing_sentinel=-1.0)
+    if _flag(row.get("jaw_visible", 0)) and jaw_y is not None and jaw_y <= jaw_standing_ratio_threshold:
+        score += 1
+
+    head_angle = _finite_number(row.get("head_vector_angle"), missing_sentinel=-1.0)
+    if head_angle is not None and head_angle <= standing_head_angle_threshold:
+        score += 1
+    return score
