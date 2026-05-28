@@ -23,6 +23,14 @@ class EntrypointTests(unittest.TestCase):
         run_pose.assert_called_once()
         self.assertEqual(run_pose.call_args.args[0].max_frames, 1)
 
+    def test_infer_dispatches_to_pose_hybrid_method(self):
+        with patch("horse_behavior.infer_behavior_pose_hybrid.run", return_value=0) as run_hybrid:
+            result = infer.main(["--method", "pose-hybrid", "--max-frames", "1", "--no-display", "--rules-only"])
+
+        self.assertEqual(result, 0)
+        run_hybrid.assert_called_once()
+        self.assertEqual(run_hybrid.call_args.args[0].max_frames, 1)
+
     def test_project_root_keeps_only_supported_entrypoint_scripts(self):
         root = Path(__file__).resolve().parents[1]
         scripts = sorted(path.name for path in root.glob("*.py"))

@@ -1,12 +1,27 @@
+import csv
+import tempfile
 import unittest
 from argparse import Namespace
+from pathlib import Path
 
 import numpy as np
 
 from horse_behavior.infer_behavior import Detection
-from horse_behavior.infer_behavior_pose_hybrid import PoseHybridRuntime, process_frame, write_csv_header, write_csv_row
+from horse_behavior.infer_behavior_pose_hybrid import (
+    PoseHybridFrameResult,
+    PoseHybridRuntime,
+    StageTimings,
+    build_parser,
+    draw_pose_hybrid_result,
+    process_frame,
+    write_csv_header,
+    write_csv_row,
+)
 from horse_behavior.pose_hybrid_context import DetectionContextCache
+from horse_behavior.pose_hybrid_fusion import FusedPoseDecision
+from horse_behavior.pose_hybrid_rules import RuleSignal
 from horse_behavior.pose_hybrid_state import BehaviorStateMachine, StateMachineConfig
+from horse_behavior.pose_hybrid_state import StableBehaviorDecision
 
 
 class FakePoseModel:
@@ -207,6 +222,61 @@ class InferBehaviorPoseHybridTests(unittest.TestCase):
         self.assertEqual(result.detections, [])
         self.assertEqual(result.feature_row["grass_exists"], 0)
         self.assertEqual(result.decision.rule_behavior, "head_down")
+
+
+class InferBehaviorPoseHybridCliTests(unittest.TestCase):
+    def test_parser_defaults_to_realtime_pose_hybrid_paths(self):
+        parsed = build_parser().parse_args(["--source", "video/a.mp4", "--no-display", "--rules-only"])
+
+        self.assertEqual(parsed.pose_model, "runs/pose/horse_pose_yolo_core6_crop/weights/best.pt")
+        self.assertEqual(parsed.det_interval, 8)
+        self.assertTrue(parsed.rules_only)
+
+    def test_non_debug_draws_only_horse_box_and_final_behavior(self):
+        frame = np.zeros((160, 260, 3), dtype=np.uint8)
+        result = PoseHybridFrameResult(
+            decision=FusedPoseDecision("eating", 0.91, "agreement", "test", "eating", "eating", {"eating": 0.91}),
+            stable=StableBehaviorDecision("eating", "eating", 0.91, "eating", 2, "held"),
+            rule_signal=RuleSignal("eating", "nose_near_feed", 0.9, "strong"),
+            model_signal=None,
+            pose=None,
+            horse=Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
+            detections=[Detection("grass", 0.9, (210.0, 80.0, 250.0, 130.0))],
+            feature_row={},
+            keypoints_json="[]",
+            timings=StageTimings(1, 0, 0, 0, 0),
+        )
+
+        draw_pose_hybrid_result(frame, result, debug=False)
+
+        self.assertGreater(int(frame[30, 20].sum()), 0)
+        self.assertEqual(int(frame[80, 210].sum()), 0)
+
+    def test_csv_writes_behavior_rule_model_and_timing_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.csv"
+            result = PoseHybridFrameResult(
+                decision=FusedPoseDecision("eating", 0.91, "agreement", "test", "eating", "eating", {"eating": 0.91}),
+                stable=StableBehaviorDecision("eating", "eating", 0.91, "eating", 2, "held"),
+                rule_signal=RuleSignal("eating", "nose_near_feed", 0.9, "strong"),
+                model_signal=None,
+                pose=None,
+                horse=Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
+                detections=[],
+                feature_row={},
+                keypoints_json="[]",
+                timings=StageTimings(1, 0, 0, 0, 0),
+            )
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                write_csv_header(writer)
+                write_csv_row(writer, 0, 25.0, result)
+
+            with path.open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["behavior"], "eating")
+            self.assertEqual(rows[0]["rule_behavior"], "eating")
+            self.assertEqual(rows[0]["pose_ms"], "1.000")
 
 
 if __name__ == "__main__":
