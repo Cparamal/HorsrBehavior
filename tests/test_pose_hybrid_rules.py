@@ -36,11 +36,17 @@ class PoseHybridRuleTests(unittest.TestCase):
 
         self.assertEqual(signal, RuleSignal("eating", "nose_near_feed", 0.90, "strong"))
 
-    def test_drinking_strong_when_low_nose_near_water(self):
-        signal = classify_pose_rule(row(nose_to_water_distance=0.03, water_exists=1))
+    def test_drinking_strong_when_low_nose_near_fixed_water_region(self):
+        signal = classify_pose_rule(row(nose_to_water_distance=0.03, nose_in_water_region=1, water_exists=1))
 
         self.assertEqual(signal.behavior, "drinking")
         self.assertEqual(signal.strength, "strong")
+
+    def test_detected_water_without_fixed_region_does_not_trigger_drinking(self):
+        signal = classify_pose_rule(row(nose_to_water_distance=0.03, water_exists=1, nose_in_water_region=0))
+
+        self.assertEqual(signal.behavior, "head_down")
+        self.assertEqual(signal.reason, "head_low_score")
 
     def test_head_down_medium_when_low_without_context(self):
         signal = classify_pose_rule(row())
@@ -127,7 +133,7 @@ class PoseHybridRuleTests(unittest.TestCase):
         self.assertEqual(signal.reason, "nose_near_feed")
 
     def test_water_threshold_boundary_is_inclusive(self):
-        signal = classify_pose_rule(row(nose_to_water_distance=0.08, water_exists=1))
+        signal = classify_pose_rule(row(nose_to_water_distance=0.08, nose_in_water_region=1))
 
         self.assertEqual(signal.behavior, "drinking")
         self.assertEqual(signal.reason, "nose_near_water")
@@ -136,7 +142,7 @@ class PoseHybridRuleTests(unittest.TestCase):
         signal = classify_pose_rule(
             row(
                 grass_exists=1,
-                water_exists=1,
+                nose_in_water_region=1,
                 nose_to_feed_distance=0.04,
                 nose_to_water_distance=0.03,
             )

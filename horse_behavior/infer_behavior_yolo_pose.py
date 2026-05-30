@@ -12,15 +12,19 @@ import numpy as np
 from horse_behavior.infer_behavior import (
     DEFAULT_MODEL,
     Detection,
+    add_video_segment_args,
     behavior_display_name,
     box_center,
+    compute_video_frame_range,
     detections_from_result,
     draw_clean_behavior_box,
+    draw_display_detections,
     draw_label,
     effective_model_conf,
-    head_touching_water,
     load_feed_regions,
+    load_regions,
     resize_for_display,
+    seek_video_to_frame,
 )
 from horse_behavior.pose_schema import KEYPOINT_INDEX, SUPERANIMAL_QUADRUPED_KEYPOINTS, SUPERANIMAL_QUADRUPED_SKELETON
 from horse_behavior.train_yolo import ensure_ultralytics_config_dir
@@ -80,7 +84,7 @@ class LabelSmoother:
 
 
 def display_behavior(behavior: str) -> str:
-    return BEHAVIOR_NAMES.get(behavior, behavior_display_name(behavior))
+    return behavior_display_name(behavior)
 
 
 def pose_instances_from_result(result, min_pose_conf: float) -> list[PoseInstance]:
@@ -150,7 +154,9 @@ def classify_pose_behavior(
     detections: list[Detection],
     feed_regions: list[tuple[float, float, float, float]],
     args,
+    water_regions: list[tuple[float, float, float, float]] | None = None,
 ) -> PoseBehaviorExplanation:
+    water_regions = water_regions or []
     if pose is None:
         return PoseBehaviorExplanation("unknown", "no_pose", None, None, detections)
 
@@ -164,11 +170,8 @@ def classify_pose_behavior(
     if flatness is not None and flatness <= args.lying_flatness_ratio and bbox_height / bbox_width <= args.lying_aspect_ratio:
         return PoseBehaviorExplanation("lying", "flat_back_low_box", pose, head, detections)
 
-    water_boxes = [d for d in detections if d.name == "water" and d.conf >= args.min_water_conf]
-    head_box = Detection(name="head", conf=1.0, xyxy=(head[0] - 8, head[1] - 8, head[0] + 8, head[1] + 8))
-    for water in water_boxes:
-        if head_touching_water(head_box, water) or point_box_distance(head, water.xyxy) / max(bbox_width, bbox_height) <= args.drinking_distance_ratio:
-            return PoseBehaviorExplanation("drinking", "head_near_water", pose, head, detections)
+    if point_inside_regions(head, water_regions):
+        return PoseBehaviorExplanation("drinking", "fixed_water_region", pose, head, detections)
 
     grass_boxes = [d for d in detections if d.name == "grass" and d.conf >= args.min_grass_conf]
     for grass in grass_boxes:
@@ -214,6 +217,7 @@ def draw_pose_behavior(frame, decision: PoseBehaviorDecision, explanation: PoseB
         horse = None
         if decision.pose is not None:
             horse = Detection(name="horse", conf=decision.pose.confidence, xyxy=decision.pose.bbox_xyxy)
+        draw_display_detections(frame, decision.detections, horse=horse)
         draw_clean_behavior_box(frame, horse, display_behavior(decision.behavior))
         return
 
@@ -267,7 +271,7 @@ def write_csv_row(writer, frame_index: int, fps: float, decision: PoseBehaviorDe
     )
 
 
-def process_frame(frame, pose_model, det_model, feed_regions, smoother: LabelSmoother, args) -> tuple[PoseBehaviorDecision, PoseBehaviorExplanation]:
+def process_frame(frame, pose_model, det_model, feed_regions, water_regions, smoother: LabelSmoother, args) -> tuple[PoseBehaviorDecision, PoseBehaviorExplanation]:
     pose_result = pose_model.predict(frame, imgsz=args.pose_imgsz, conf=args.pose_conf, verbose=False)[0]
     poses = pose_instances_from_result(pose_result, args.pose_conf)
     pose = select_main_pose(poses)
@@ -277,7 +281,7 @@ def process_frame(frame, pose_model, det_model, feed_regions, smoother: LabelSmo
         det_result = det_model.predict(frame, imgsz=args.det_imgsz, conf=effective_model_conf(args), verbose=False)[0]
         detections = detections_from_result(det_result, effective_model_conf(args))
 
-    explanation = classify_pose_behavior(pose, detections, feed_regions, args)
+    explanation = classify_pose_behavior(pose, detections, feed_regions, args, water_regions=water_regions)
     behavior = smoother.update(explanation.behavior)
     return (
         PoseBehaviorDecision(
@@ -291,7 +295,7 @@ def process_frame(frame, pose_model, det_model, feed_regions, smoother: LabelSmo
     )
 
 
-def run_video(args, pose_model, det_model, feed_regions) -> int:
+def run_video(args, pose_model, det_model, feed_regions, water_regions) -> int:
     source = Path(args.source)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -302,8 +306,15 @@ def run_video(args, pose_model, det_model, feed_regions) -> int:
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    limit = args.max_frames if args.max_frames and args.max_frames > 0 else total_frames
-    limit = min(limit, total_frames) if total_frames > 0 and limit else limit
+    frame_range = compute_video_frame_range(
+        total_frames=total_frames,
+        fps=fps,
+        start_sec=args.start_sec,
+        end_sec=args.end_sec,
+        max_frames=args.max_frames,
+    )
+    limit = frame_range.frame_limit
+    seek_video_to_frame(capture, frame_range)
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
         raise RuntimeError(f"Could not create output video: {output}")
@@ -316,15 +327,16 @@ def run_video(args, pose_model, det_model, feed_regions) -> int:
         csv_writer = csv.writer(csv_file)
         write_csv_header(csv_writer)
     smoother = LabelSmoother(args.smooth_window)
-    frame_index = 0
+    processed_frames = 0
+    frame_index = frame_range.start_frame
     try:
         while True:
-            if limit and frame_index >= limit:
+            if limit is not None and processed_frames >= limit:
                 break
             ok, frame = capture.read()
             if not ok:
                 break
-            decision, explanation = process_frame(frame, pose_model, det_model, feed_regions, smoother, args)
+            decision, explanation = process_frame(frame, pose_model, det_model, feed_regions, water_regions, smoother, args)
             draw_pose_behavior(frame, decision, explanation, args.debug)
             writer.write(frame)
             if csv_writer:
@@ -334,9 +346,10 @@ def run_video(args, pose_model, det_model, feed_regions) -> int:
                 key = cv2.waitKey(max(1, int(1000 / fps))) & 0xFF
                 if key in (27, ord("q"), ord("Q")):
                     break
+            processed_frames += 1
             frame_index += 1
-            if frame_index % 100 == 0:
-                print(f"Processed {frame_index}/{limit or '?'} frames")
+            if processed_frames % 100 == 0:
+                print(f"Processed {processed_frames}/{limit if limit is not None else '?'} frames")
     finally:
         capture.release()
         writer.release()
@@ -347,7 +360,7 @@ def run_video(args, pose_model, det_model, feed_regions) -> int:
     print(f"Output video: {output.resolve()}")
     if args.csv:
         print(f"Frame CSV: {Path(args.csv).resolve()}")
-    print(f"Processed frames: {frame_index}")
+    print(f"Processed frames: {processed_frames}")
     return 0
 
 
@@ -359,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output annotated video path.")
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Optional frame CSV path. Empty disables CSV.")
     parser.add_argument("--feed-regions", default="config/feed_regions.yaml", help="Optional feed region YAML.")
+    parser.add_argument("--water-regions", default="config/water_regions.yaml", help="Optional fixed drinking region YAML.")
     parser.add_argument("--pose-imgsz", type=int, default=640)
     parser.add_argument("--pose-conf", type=float, default=0.25)
     parser.add_argument("--det-imgsz", type=int, default=640)
@@ -376,7 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lying-flatness-ratio", type=float, default=0.10)
     parser.add_argument("--lying-aspect-ratio", type=float, default=0.70)
     parser.add_argument("--smooth-window", type=int, default=15)
-    parser.add_argument("--max-frames", type=int, default=1800)
+    parser.add_argument("--max-frames", type=int, default=0)
+    add_video_segment_args(parser)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--display-scale", type=float, default=0.5)
@@ -404,7 +419,8 @@ def run(args: argparse.Namespace) -> int:
     pose_model = YOLO(str(Path(args.pose_model)))
     det_model = None if args.no_detector else YOLO(str(Path(args.det_model)))
     feed_regions = load_feed_regions(Path(args.feed_regions))
-    return run_video(args, pose_model, det_model, feed_regions)
+    water_regions = load_regions(Path(args.water_regions))
+    return run_video(args, pose_model, det_model, feed_regions, water_regions)
 
 
 def main(argv: list[str] | None = None) -> int:

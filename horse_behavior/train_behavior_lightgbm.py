@@ -153,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for saved model artifacts.")
     parser.add_argument("--feature-output-dir", default="dataset/behavior_features", help="Directory for exported feature CSV files.")
     parser.add_argument("--feed-regions", default="config/feed_regions.yaml", help="Optional feed region YAML.")
+    parser.add_argument("--water-regions", default="config/water_regions.yaml", help="Optional fixed drinking region YAML for LightGBM features.")
+    parser.add_argument("--feature-history-window", type=int, default=5, help="Recent row window for temporal feature export.")
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size for feature export.")
     parser.add_argument("--conf", type=float, default=0.05, help="YOLO confidence threshold for feature export.")
     parser.add_argument("--skip-feature-export", action="store_true", help="Use existing feature CSV files instead of exporting first.")
@@ -169,7 +171,7 @@ def export_features_if_needed(args: argparse.Namespace) -> None:
 
     from horse_behavior.behavior_features import default_image_size_reader, make_yolo_predictor, resolve_image_path
     from horse_behavior.export_yolo_features import export_labeled_features
-    from horse_behavior.infer_behavior import load_feed_regions
+    from horse_behavior.infer_behavior import load_feed_regions, load_regions
     from horse_behavior.labels import read_behavior_rows
     from horse_behavior.train_yolo import ensure_ultralytics_config_dir
 
@@ -194,6 +196,7 @@ def export_features_if_needed(args: argparse.Namespace) -> None:
     model = YOLO(str(model_path))
     predict_detections = make_yolo_predictor(model, imgsz=args.imgsz, conf=args.conf)
     feed_regions = load_feed_regions(resolve_image_path(project_root, args.feed_regions))
+    water_regions = load_regions(resolve_image_path(project_root, args.water_regions))
 
     for split, label_path, output_path in (
         ("train", resolve_image_path(project_root, args.train_labels), Path(args.train_features)),
@@ -206,6 +209,8 @@ def export_features_if_needed(args: argparse.Namespace) -> None:
             predict_detections=predict_detections,
             image_size_reader=default_image_size_reader,
             feed_regions=feed_regions,
+            water_regions=water_regions,
+            feature_history_window=args.feature_history_window,
             project_root=project_root,
         )
         print(f"{split}: wrote {written} rows to {output_path.resolve()}")

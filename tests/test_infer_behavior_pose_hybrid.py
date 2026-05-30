@@ -224,6 +224,32 @@ class InferBehaviorPoseHybridTests(unittest.TestCase):
         self.assertEqual(result.feature_row["grass_exists"], 0)
         self.assertEqual(result.decision.rule_behavior, "head_down")
 
+    def test_process_frame_runs_detector_when_segment_starts_between_intervals(self):
+        runtime = PoseHybridRuntime(
+            pose_model=FakePoseModel(FakePoseResult()),
+            det_model=FakeDetModel([Detection("grass", 0.9, (30.0, 80.0, 70.0, 120.0))]),
+            behavior_model=None,
+            label_encoder=None,
+            feature_columns=[],
+            feed_regions=[],
+            water_regions=[],
+            context_cache=DetectionContextCache(ttl_frames=25),
+            state_machine=BehaviorStateMachine(StateMachineConfig(enter_frames={"eating": 1}, exit_frames={"eating": 1})),
+            feature_memory=None,
+        )
+        frame = np.zeros((140, 240, 3), dtype=np.uint8)
+        local_args = args()
+        local_args.rules_only = True
+
+        result = process_frame(frame, 13, 25.0, runtime, local_args)
+
+        self.assertEqual(runtime.det_model.calls, 1)
+        self.assertEqual(len(result.detections), 1)
+        self.assertEqual(result.detections[0].name, "grass")
+        self.assertAlmostEqual(result.detections[0].conf, 0.9)
+        self.assertEqual(result.detections[0].xyxy, (30.0, 80.0, 70.0, 120.0))
+        self.assertEqual(result.decision.behavior, "eating")
+
 
 class InferBehaviorPoseHybridCliTests(unittest.TestCase):
     def test_parser_defaults_to_realtime_pose_hybrid_paths(self):
@@ -250,7 +276,7 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         self.assertEqual(parsed.det_interval, 8)
         self.assertEqual(parsed.det_ttl, 25)
         self.assertEqual(parsed.keypoint_threshold, 0.35)
-        self.assertEqual(parsed.max_frames, 1800)
+        self.assertEqual(parsed.max_frames, 0)
         self.assertFalse(parsed.rules_only)
         self.assertFalse(parsed.no_detector)
         self.assertFalse(parsed.debug)
@@ -261,8 +287,8 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         with_pose = build_parser().parse_args(["--draw-pose"])
         self.assertTrue(with_pose.draw_pose)
 
-    def test_non_debug_draws_only_horse_box_and_final_behavior(self):
-        frame = np.zeros((160, 260, 3), dtype=np.uint8)
+    def test_non_debug_draws_filtered_context_boxes_and_final_behavior(self):
+        frame = np.zeros((200, 340, 3), dtype=np.uint8)
         result = PoseHybridFrameResult(
             decision=FusedPoseDecision("eating", 0.91, "agreement", "test", "eating", "eating", {"eating": 0.91}),
             stable=StableBehaviorDecision("eating", "eating", 0.91, "eating", 2, "held"),
@@ -270,7 +296,13 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
             model_signal=None,
             pose=None,
             horse=Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
-            detections=[Detection("grass", 0.9, (210.0, 80.0, 250.0, 130.0))],
+            detections=[
+                Detection("horse", 0.9, (20.0, 30.0, 200.0, 140.0)),
+                Detection("head", 0.9, (220.0, 50.0, 270.0, 100.0)),
+                Detection("head", 0.3, (290.0, 50.0, 330.0, 100.0)),
+                Detection("grass", 0.9, (210.0, 120.0, 260.0, 170.0)),
+                Detection("grass", 0.3, (205.0, 115.0, 265.0, 175.0)),
+            ],
             feature_row={},
             keypoints_json="[]",
             timings=StageTimings(1, 0, 0, 0, 0),
@@ -279,7 +311,10 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         draw_pose_hybrid_result(frame, result, debug=False)
 
         self.assertGreater(int(frame[30, 20].sum()), 0)
-        self.assertEqual(int(frame[80, 210].sum()), 0)
+        self.assertGreater(int(frame[50, 220].sum()), 0)
+        self.assertEqual(int(frame[50, 290].sum()), 0)
+        self.assertGreater(int(frame[120, 210].sum()), 0)
+        self.assertEqual(int(frame[115, 205].sum()), 0)
 
     def test_draw_pose_switch_draws_keypoints_and_core6_skeleton(self):
         frame = np.zeros((160, 260, 3), dtype=np.uint8)
@@ -316,7 +351,7 @@ class InferBehaviorPoseHybridCliTests(unittest.TestCase):
         self.assertGreater(int(frame[95, 40].sum()), 0)
         self.assertGreater(int(frame[93, 47].sum()), 0)
         self.assertGreater(int(frame[51, 127].sum()), 0)
-        self.assertEqual(int(frame[80, 210].sum()), 0)
+        self.assertGreater(int(frame[80, 210].sum()), 0)
 
     def test_csv_writes_behavior_rule_model_and_timing_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

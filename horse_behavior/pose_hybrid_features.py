@@ -195,7 +195,7 @@ def extract_pose_hybrid_features(
                 "nose_in_feed_region": int(point_in_regions(nose, feed_regions)),
                 "nose_in_water_region": int(point_in_regions(nose, water_regions)),
                 "nose_to_feed_distance": _normalized_distance_to_regions_or_box(nose, feed_regions, grass, horse_scale),
-                "nose_to_water_distance": _normalized_distance_to_regions_or_box(nose, water_regions, water, horse_scale),
+                "nose_to_water_distance": _normalized_distance_to_regions(nose, water_regions, horse_scale),
                 "nose_speed": _point_speed(nose, previous.nose if previous else None, frame_index, previous.frame_index if previous else None, fps),
             }
         )
@@ -318,6 +318,15 @@ def _distance_to_regions_or_box(
     return min(distances)
 
 
+def _distance_to_regions(
+    point: tuple[float, float],
+    regions: list[tuple[float, float, float, float]],
+) -> float:
+    if not regions:
+        return -1.0
+    return min(_point_region_distance(point, region) for region in regions)
+
+
 def _normalized_distance_to_regions_or_box(
     point: tuple[float, float],
     regions: list[tuple[float, float, float, float]],
@@ -325,6 +334,17 @@ def _normalized_distance_to_regions_or_box(
     scale: float,
 ) -> float:
     distance = _distance_to_regions_or_box(point, regions, detection)
+    if distance < 0.0:
+        return distance
+    return distance / max(1.0, scale)
+
+
+def _normalized_distance_to_regions(
+    point: tuple[float, float],
+    regions: list[tuple[float, float, float, float]],
+    scale: float,
+) -> float:
+    distance = _distance_to_regions(point, regions)
     if distance < 0.0:
         return distance
     return distance / max(1.0, scale)

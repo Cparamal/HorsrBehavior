@@ -1,5 +1,0 @@
-﻿standing
-head_down
-eating
-drinking
-lying

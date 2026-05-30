@@ -10,12 +10,16 @@ from horse_behavior.behavior_roi import crop_behavior_roi
 from horse_behavior.infer_behavior import (
     DEFAULT_MODEL,
     Detection,
+    add_video_segment_args,
     behavior_display_name,
+    compute_video_frame_range,
     detections_from_result,
     draw_clean_behavior_box,
+    draw_display_detections,
     draw_label,
     effective_model_conf,
     resize_for_display,
+    seek_video_to_frame,
     select_largest_box,
 )
 from horse_behavior.train_yolo import ensure_ultralytics_config_dir
@@ -80,6 +84,7 @@ def classify_roi_frame(
 
 def draw_yolo_roi_cls_decision(frame, decision: YoloRoiClsDecision, debug: bool = False) -> None:
     if not debug:
+        draw_display_detections(frame, decision.detections, horse=decision.horse)
         draw_clean_behavior_box(frame, decision.horse, decision.behavior)
         return
 
@@ -107,7 +112,7 @@ def draw_yolo_roi_cls_decision(frame, decision: YoloRoiClsDecision, debug: bool 
 
     rx1, ry1, rx2, ry2 = decision.roi_box
     cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 220, 220), 3)
-    label = f"ROI YOLO分类：{behavior_display_name(decision.behavior)} {decision.confidence:.2f}"
+    label = f"ROI YOLO: {behavior_display_name(decision.behavior)} {decision.confidence:.2f}"
     draw_label(frame, label, (max(8, rx1), max(32, ry1 - 8)), color=(0, 220, 220))
 
 
@@ -145,8 +150,15 @@ def run_video(args, det_model, cls_model) -> int:
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    limit = args.max_frames if args.max_frames and args.max_frames > 0 else total_frames
-    limit = min(limit, total_frames) if total_frames > 0 and limit else limit
+    frame_range = compute_video_frame_range(
+        total_frames=total_frames,
+        fps=fps,
+        start_sec=args.start_sec,
+        end_sec=args.end_sec,
+        max_frames=args.max_frames,
+    )
+    limit = frame_range.frame_limit
+    seek_video_to_frame(capture, frame_range)
 
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
@@ -161,10 +173,11 @@ def run_video(args, det_model, cls_model) -> int:
         csv_writer = csv.writer(csv_file)
         write_csv_header(csv_writer)
 
-    frame_index = 0
+    processed_frames = 0
+    frame_index = frame_range.start_frame
     try:
         while True:
-            if limit and frame_index >= limit:
+            if limit is not None and processed_frames >= limit:
                 break
             ok, frame = capture.read()
             if not ok:
@@ -187,9 +200,10 @@ def run_video(args, det_model, cls_model) -> int:
                 key = cv2.waitKey(max(1, int(1000 / fps))) & 0xFF
                 if key in (27, ord("q"), ord("Q")):
                     break
+            processed_frames += 1
             frame_index += 1
-            if frame_index % 100 == 0:
-                print(f"Processed {frame_index}/{limit or '?'} frames")
+            if processed_frames % 100 == 0:
+                print(f"Processed {processed_frames}/{limit if limit is not None else '?'} frames")
     finally:
         capture.release()
         writer.release()
@@ -201,7 +215,7 @@ def run_video(args, det_model, cls_model) -> int:
     print(f"Output video: {output.resolve()}")
     if args.csv:
         print(f"Frame CSV: {Path(args.csv).resolve()}")
-    print(f"Processed frames: {frame_index}")
+    print(f"Processed frames: {processed_frames}")
     return 0
 
 
@@ -220,7 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO detection image size.")
     parser.add_argument("--cls-imgsz", type=int, default=224, help="YOLO classification image size.")
     parser.add_argument("--crop-padding", type=float, default=0.15, help="Padding ratio around selected horse ROI.")
-    parser.add_argument("--max-frames", type=int, default=1800, help="Maximum frames to process.")
+    parser.add_argument("--max-frames", type=int, default=0, help="Maximum frames to process. 0 means full selected segment.")
+    add_video_segment_args(parser)
     parser.add_argument("--debug", action="store_true", help="Draw all YOLO detections and the ROI crop box.")
     parser.add_argument("--no-display", action="store_true", help="Do not open a realtime preview window.")
     parser.add_argument("--display-scale", type=float, default=0.5, help="Realtime preview scale.")

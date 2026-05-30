@@ -10,14 +10,18 @@ import joblib
 
 from horse_behavior.infer_behavior import (
     Detection,
+    add_video_segment_args,
     behavior_display_name,
+    compute_video_frame_range,
     detections_from_result,
     draw_clean_behavior_box,
+    draw_display_detections,
     draw_label,
     effective_model_conf,
     load_feed_regions,
     load_regions,
     resize_for_display,
+    seek_video_to_frame,
 )
 from horse_behavior.pose_hybrid_context import DetectionContextCache, should_run_detector
 from horse_behavior.pose_hybrid_features import (
@@ -219,6 +223,7 @@ def draw_pose_hybrid_result(
     draw_pose: bool = False,
 ) -> None:
     if not debug:
+        draw_display_detections(frame, result.detections, horse=result.horse)
         draw_clean_behavior_box(frame, result.horse, result.stable.stable_behavior)
         if draw_pose:
             _draw_core6_pose(frame, result.pose)
@@ -267,7 +272,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--det-interval", type=int, default=8)
     parser.add_argument("--det-ttl", type=int, default=25)
     parser.add_argument("--keypoint-threshold", type=float, default=0.35)
-    parser.add_argument("--max-frames", type=int, default=1800)
+    parser.add_argument("--max-frames", type=int, default=0)
+    add_video_segment_args(parser)
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--no-detector", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -290,8 +296,15 @@ def run_video(args, runtime: PoseHybridRuntime) -> int:
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    limit = args.max_frames if args.max_frames and args.max_frames > 0 else total_frames
-    limit = min(limit, total_frames) if total_frames > 0 and limit else limit
+    frame_range = compute_video_frame_range(
+        total_frames=total_frames,
+        fps=fps,
+        start_sec=args.start_sec,
+        end_sec=args.end_sec,
+        max_frames=args.max_frames,
+    )
+    limit = frame_range.frame_limit
+    seek_video_to_frame(capture, frame_range)
 
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
@@ -306,10 +319,11 @@ def run_video(args, runtime: PoseHybridRuntime) -> int:
         csv_writer = csv.writer(csv_file)
         write_csv_header(csv_writer)
 
-    frame_index = 0
+    processed_frames = 0
+    frame_index = frame_range.start_frame
     try:
         while True:
-            if limit and frame_index >= limit:
+            if limit is not None and processed_frames >= limit:
                 break
             ok, frame = capture.read()
             if not ok:
@@ -344,9 +358,10 @@ def run_video(args, runtime: PoseHybridRuntime) -> int:
                 key = cv2.waitKey(max(1, int(1000 / fps))) & 0xFF
                 if key in (27, ord("q"), ord("Q")):
                     break
+            processed_frames += 1
             frame_index += 1
-            if frame_index % 100 == 0:
-                print(f"Processed {frame_index}/{limit or '?'} frames")
+            if processed_frames % 100 == 0:
+                print(f"Processed {processed_frames}/{limit if limit is not None else '?'} frames")
     finally:
         capture.release()
         writer.release()
@@ -358,7 +373,7 @@ def run_video(args, runtime: PoseHybridRuntime) -> int:
     print(f"Output video: {output.resolve()}")
     if args.csv:
         print(f"Frame CSV: {Path(args.csv).resolve()}")
-    print(f"Processed frames: {frame_index}")
+    print(f"Processed frames: {processed_frames}")
     return 0
 
 
@@ -429,7 +444,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _context_detections(frame, frame_index: int, runtime: PoseHybridRuntime, args) -> list[Detection]:
-    if runtime.det_model is not None and should_run_detector(frame_index, args.det_interval):
+    if runtime.det_model is not None and (
+        should_run_detector(frame_index, args.det_interval)
+        or runtime.context_cache.updated_frame_index is None
+    ):
         result = runtime.det_model.predict(frame, imgsz=args.det_imgsz, conf=effective_model_conf(args), verbose=False)[0]
         return runtime.context_cache.update(frame_index, detections_from_result(result, effective_model_conf(args)))
     return runtime.context_cache.current(frame_index)

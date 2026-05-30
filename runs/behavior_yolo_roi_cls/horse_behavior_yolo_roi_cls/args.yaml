@@ -107,4 +107,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: D:\DevWorkSpace\python\HorseBehavior\runs\behavior_yolo_roi_cls\horse_behavior_yolo_roi_cls
+save_dir: D:\DevWorkSpace\python\HorseBehavior\runs\behavior_yolo_roi_cls\horse_behavior_yolo_roi_cls-2

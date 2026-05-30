@@ -235,6 +235,24 @@ class PoseHybridFeatureTests(unittest.TestCase):
 
         self.assertAlmostEqual(result.row["nose_to_water_distance"], 0.05)
 
+    def test_detected_water_does_not_contribute_to_fixed_water_distance(self):
+        pose = make_pose(nose=(40.0, 95.0))
+
+        result = extract_pose_hybrid_features(
+            pose=pose,
+            detections=[Detection("water", 0.8, (35.0, 90.0, 45.0, 100.0))],
+            image_size=(240, 140),
+            feed_regions=[],
+            water_regions=[],
+            frame_index=5,
+            fps=25.0,
+            previous=None,
+        )
+
+        self.assertEqual(result.row["water_exists"], 1)
+        self.assertEqual(result.row["nose_in_water_region"], 0)
+        self.assertEqual(result.row["nose_to_water_distance"], -1.0)
+
     def test_context_distances_preserve_missing_sentinel_when_no_context_exists(self):
         result = extract_pose_hybrid_features(
             pose=make_pose(),

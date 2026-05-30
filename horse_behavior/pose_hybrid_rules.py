@@ -90,7 +90,7 @@ def classify_pose_rule(
         return RuleSignal("unknown", "ambiguous_head_pose", 0.0, "weak")
 
     water_distance = _finite_number(row.get("nose_to_water_distance"), missing_sentinel=-1.0)
-    if _flag(row.get("water_exists", 0)) or _flag(row.get("nose_in_water_region", 0)):
+    if _flag(row.get("nose_in_water_region", 0)):
         if (
             water_distance is not None
             and 0.0 <= water_distance <= water_distance_threshold

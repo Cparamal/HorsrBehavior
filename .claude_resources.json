@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-27T19:13:20.958991",
+  "timestamp": "2026-05-29T14:49:02.924420",
   "os": {
     "system": "Windows",
     "release": "11",
@@ -17,18 +17,18 @@
   },
   "memory": {
     "total_gb": 15.64,
-    "available_gb": 2.65,
-    "used_gb": 12.99,
-    "percent_used": 83.1,
-    "swap_total_gb": 22.0,
-    "swap_available_gb": 18.89
+    "available_gb": 3.42,
+    "used_gb": 12.21,
+    "percent_used": 78.1,
+    "swap_total_gb": 23.0,
+    "swap_available_gb": 22.09
   },
   "disk": {
     "path": "D:\\DevWorkSpace\\python\\HorseBehavior",
     "total_gb": 953.85,
-    "available_gb": 358.03,
-    "used_gb": 595.82,
-    "percent_used": 62.5
+    "available_gb": 341.3,
+    "used_gb": 612.55,
+    "percent_used": 64.2
   },
   "gpu": {
     "nvidia_gpus": [
@@ -36,7 +36,7 @@
         "index": 0,
         "name": "NVIDIA GeForce RTX 4050 Laptop GPU",
         "memory_total_mb": 6141.0,
-        "memory_free_mb": 5921.0,
+        "memory_free_mb": 5804.0,
         "driver_version": "551.78",
         "compute_capability": "8.9",
         "type": "NVIDIA",

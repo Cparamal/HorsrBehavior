@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 STRONG_RULE_REASONS = {"lying_horse", "sitting_horse"}
 MEDIUM_RULE_REASONS = {"head_low"}
-CONTACT_RULE_REASONS = {"grass_distance", "grass_overlap", "water_overlap"}
+CONTACT_RULE_REASONS = {"grass_distance", "grass_overlap", "water_region_head_low"}
 GENERIC_ROI_BEHAVIORS = {"standing", "unknown", "未知", "站立", "鏈煡", "绔欑珛"}
 
 
@@ -68,6 +68,18 @@ def fuse_roi_and_rules(
             behavior=rule_signal.behavior,
             confidence=confidence,
             source="medium_rule",
+            roi_behavior=roi_behavior,
+            roi_confidence=roi_confidence,
+            rule_behavior=rule_signal.behavior,
+            rule_reason=rule_signal.reason,
+        )
+
+    if rule_signal.reason == "water_region_head_low" and roi_behavior in GENERIC_ROI_BEHAVIORS:
+        confidence = min(1.0, max(roi_confidence, config.roi_accept_threshold) + config.contact_rule_bonus)
+        return FusedBehaviorDecision(
+            behavior=rule_signal.behavior,
+            confidence=confidence,
+            source="contact_rule",
             roi_behavior=roi_behavior,
             roi_confidence=roi_confidence,
             rule_behavior=rule_signal.behavior,

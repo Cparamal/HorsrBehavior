@@ -10,15 +10,21 @@ import cv2
 from horse_behavior.behavior_fusion import FusionConfig, FusedBehaviorDecision, RuleSignal, fuse_roi_and_rules
 from horse_behavior.infer_behavior import (
     DEFAULT_MODEL,
+    DEFAULT_MIN_WATER_HEAD_OVERLAP_RATIO,
     Detection,
+    add_video_segment_args,
     behavior_display_name,
+    compute_video_frame_range,
     draw_clean_behavior_box,
     draw_debug_overlay,
+    draw_display_detections,
     draw_label,
     effective_model_conf,
     explain_behavior,
     load_feed_regions,
+    load_regions,
     resize_for_display,
+    seek_video_to_frame,
 )
 from horse_behavior.infer_behavior_yolo_roi_cls import (
     DEFAULT_ROI_CLS_MODEL,
@@ -43,28 +49,35 @@ class RoiRulesFrameDecision:
 
 
 class LabelSmoother:
-    def __init__(self, window_size: int):
+    def __init__(self, window_size: int, drinking_window_size: int | None = None):
         self.window_size = max(1, int(window_size))
+        self.drinking_window_size = max(1, int(drinking_window_size if drinking_window_size is not None else self.window_size))
         self.history: deque[str] = deque(maxlen=self.window_size)
+        self.current = ""
 
     def update(self, behavior: str) -> str:
         self.history.append(behavior)
+        window_size = self.drinking_window_size if behavior == "drinking" or self.current == "drinking" else self.window_size
+        values = list(self.history)[-window_size:]
         counts: dict[str, int] = {}
-        for value in self.history:
+        for value in values:
             counts[value] = counts.get(value, 0) + 1
-        return max(counts.items(), key=lambda item: item[1])[0]
+        self.current = max(counts.items(), key=lambda item: item[1])[0]
+        return self.current
 
 
 def make_rule_signal(
     detections: list[Detection],
     image_size: tuple[int, int],
     feed_regions: list[tuple[float, float, float, float]],
+    water_regions: list[tuple[float, float, float, float]],
     args,
 ) -> tuple[RuleSignal, object]:
     explanation = explain_behavior(
         detections,
         image_size=image_size,
         feed_regions=feed_regions,
+        water_regions=water_regions,
         eating_threshold_inside=args.eating_threshold_inside,
         eating_threshold_outside=args.eating_threshold_outside,
         drinking_threshold=args.drinking_threshold,
@@ -74,6 +87,7 @@ def make_rule_signal(
         min_overlap_grass_conf=args.min_overlap_grass_conf,
         min_grass_overlap_ratio=args.min_grass_overlap_ratio,
         min_water_conf=args.min_water_conf,
+        min_water_head_overlap_ratio=getattr(args, "min_water_head_overlap_ratio", DEFAULT_MIN_WATER_HEAD_OVERLAP_RATIO),
         min_pose_conf=args.min_pose_conf,
         front_head_margin_ratio=args.front_head_margin_ratio,
         top_head_margin_ratio=args.top_head_margin_ratio,
@@ -96,6 +110,7 @@ def decide_frame(
     det_model,
     cls_model,
     feed_regions: list[tuple[float, float, float, float]],
+    water_regions: list[tuple[float, float, float, float]],
     fusion_config: FusionConfig,
     smoother: LabelSmoother,
     args,
@@ -112,7 +127,7 @@ def decide_frame(
         cls_imgsz=args.cls_imgsz,
         crop_padding=args.crop_padding,
     )
-    rule_signal, explanation = make_rule_signal(detections, (width, height), feed_regions, args)
+    rule_signal, explanation = make_rule_signal(detections, (width, height), feed_regions, water_regions, args)
     fused = fuse_roi_and_rules(
         roi_behavior=roi_decision.behavior,
         roi_confidence=roi_decision.confidence,
@@ -150,11 +165,13 @@ def draw_debug_roi_rules_decision(frame, decision: RoiRulesFrameDecision, explan
 
 def draw_clean_roi_rules_decision(frame, decision: RoiRulesFrameDecision) -> None:
     if decision.roi.horse is not None:
+        draw_display_detections(frame, decision.detections, horse=decision.roi.horse)
         draw_clean_behavior_box(frame, decision.roi.horse, decision.smoothed_behavior)
         return
 
     x1, y1, x2, y2 = decision.roi.roi_box
     fallback_horse = Detection(name="horse", conf=0.0, xyxy=(x1, y1, x2, y2))
+    draw_display_detections(frame, decision.detections, horse=fallback_horse)
     draw_clean_behavior_box(frame, fallback_horse, decision.smoothed_behavior)
 
 
@@ -206,7 +223,7 @@ def write_csv_row(writer, frame_index: int, fps: float, decision: RoiRulesFrameD
     )
 
 
-def run_video(args, det_model, cls_model, feed_regions) -> int:
+def run_video(args, det_model, cls_model, feed_regions, water_regions) -> int:
     source = Path(args.source)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -219,8 +236,15 @@ def run_video(args, det_model, cls_model, feed_regions) -> int:
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    limit = args.max_frames if args.max_frames and args.max_frames > 0 else total_frames
-    limit = min(limit, total_frames) if total_frames > 0 and limit else limit
+    frame_range = compute_video_frame_range(
+        total_frames=total_frames,
+        fps=fps,
+        start_sec=args.start_sec,
+        end_sec=args.end_sec,
+        max_frames=args.max_frames,
+    )
+    limit = frame_range.frame_limit
+    seek_video_to_frame(capture, frame_range)
 
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
@@ -236,11 +260,12 @@ def run_video(args, det_model, cls_model, feed_regions) -> int:
         write_csv_header(csv_writer)
 
     fusion_config = make_fusion_config(args)
-    smoother = LabelSmoother(args.smooth_window)
-    frame_index = 0
+    smoother = LabelSmoother(args.smooth_window, drinking_window_size=args.drinking_smooth_window)
+    processed_frames = 0
+    frame_index = frame_range.start_frame
     try:
         while True:
-            if limit and frame_index >= limit:
+            if limit is not None and processed_frames >= limit:
                 break
             ok, frame = capture.read()
             if not ok:
@@ -250,6 +275,7 @@ def run_video(args, det_model, cls_model, feed_regions) -> int:
                 det_model=det_model,
                 cls_model=cls_model,
                 feed_regions=feed_regions,
+                water_regions=water_regions,
                 fusion_config=fusion_config,
                 smoother=smoother,
                 args=args,
@@ -263,9 +289,10 @@ def run_video(args, det_model, cls_model, feed_regions) -> int:
                 key = cv2.waitKey(max(1, int(1000 / fps))) & 0xFF
                 if key in (27, ord("q"), ord("Q")):
                     break
+            processed_frames += 1
             frame_index += 1
-            if frame_index % 100 == 0:
-                print(f"Processed {frame_index}/{limit or '?'} frames")
+            if processed_frames % 100 == 0:
+                print(f"Processed {processed_frames}/{limit if limit is not None else '?'} frames")
     finally:
         capture.release()
         writer.release()
@@ -277,7 +304,7 @@ def run_video(args, det_model, cls_model, feed_regions) -> int:
     print(f"Output video: {output.resolve()}")
     if args.csv:
         print(f"Frame CSV: {Path(args.csv).resolve()}")
-    print(f"Processed frames: {frame_index}")
+    print(f"Processed frames: {processed_frames}")
     return 0
 
 
@@ -289,6 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output annotated video path.")
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Optional frame-level CSV path. Empty disables CSV.")
     parser.add_argument("--feed-regions", default="config/feed_regions.yaml", help="Optional feed region YAML.")
+    parser.add_argument("--water-regions", default="config/water_regions.yaml", help="Optional fixed drinking region YAML. Regions affect drinking rules but are not drawn.")
     parser.add_argument("--conf", type=float, default=0.25, help="YOLO detection confidence threshold.")
     parser.add_argument("--model-conf", type=float, default=0.05, help="Low-level YOLO detection candidate threshold.")
     parser.add_argument("--min-grass-conf", type=float, default=0.18, help="Minimum grass confidence for rules.")
@@ -296,6 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-overlap-grass-conf", type=float, default=0.05, help="Minimum overlap grass confidence.")
     parser.add_argument("--min-grass-overlap-ratio", type=float, default=0.08, help="Minimum head-area overlap ratio for eating.")
     parser.add_argument("--min-water-conf", type=float, default=0.45, help="Minimum water confidence for drinking.")
+    parser.add_argument("--min-water-head-overlap-ratio", type=float, default=0.45, help="Minimum head-area overlap ratio for detected-water drinking.")
     parser.add_argument("--min-pose-conf", type=float, default=0.35, help="Minimum lying/sitting confidence for strong rules.")
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO detection image size.")
     parser.add_argument("--cls-imgsz", type=int, default=224, help="YOLO classification image size.")
@@ -312,7 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contact-rule-bonus", type=float, default=0.35, help="Score bonus for eating/drinking contact rules.")
     parser.add_argument("--weak-rule-bonus", type=float, default=0.15, help="Score bonus for weak rules.")
     parser.add_argument("--smooth-window", type=int, default=15, help="Majority smoothing window in frames.")
-    parser.add_argument("--max-frames", type=int, default=1800, help="Maximum frames to process. 0 means full video.")
+    parser.add_argument("--drinking-smooth-window", type=int, default=5, help="Shorter majority smoothing window in frames when entering or exiting drinking.")
+    parser.add_argument("--max-frames", type=int, default=0, help="Maximum frames to process. 0 means full selected segment.")
+    add_video_segment_args(parser)
     parser.add_argument("--debug", action="store_true", help="Draw rule-debug overlay.")
     parser.add_argument("--no-display", action="store_true", help="Do not open a realtime preview window.")
     parser.add_argument("--display-scale", type=float, default=0.5, help="Realtime preview scale.")
@@ -340,9 +371,10 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     feed_regions = load_feed_regions(Path(args.feed_regions))
+    water_regions = load_regions(Path(args.water_regions))
     det_model = YOLO(str(Path(args.det_model)))
     cls_model = YOLO(str(Path(args.cls_model)))
-    return run_video(args, det_model, cls_model, feed_regions)
+    return run_video(args, det_model, cls_model, feed_regions, water_regions)
 
 
 def main(argv: list[str] | None = None) -> int:

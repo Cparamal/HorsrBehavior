@@ -1,0 +1,16 @@
+# Optional fixed drinking areas in pixel coordinates.
+# These regions participate in drinking rules, but they are not drawn on output videos.
+#
+# Example:
+# regions:
+#   - name: water_trough
+#     x1: 250
+#     y1: 120
+#     x2: 420
+#     y2: 260
+regions: [
+  708,
+  742,
+  779,
+  824
+]
