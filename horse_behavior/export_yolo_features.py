@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Callable
 
 from horse_behavior.behavior_features import (
+    BehaviorFeatureHistory,
     FEATURE_COLUMNS,
     default_image_size_reader,
     extract_behavior_features,
     make_yolo_predictor,
     resolve_image_path,
 )
-from horse_behavior.infer_behavior import Detection, load_feed_regions
+from horse_behavior.infer_behavior import Detection, load_feed_regions, load_regions
 from horse_behavior.train_yolo import ensure_ultralytics_config_dir
 
 
@@ -50,12 +51,16 @@ def export_labeled_features(
     predict_detections: Callable[[Path], list[Detection]],
     image_size_reader: Callable[[Path], tuple[int, int]],
     feed_regions: list[tuple[float, float, float, float]],
+    water_regions: list[tuple[float, float, float, float]] | None = None,
+    feature_history_window: int = 5,
     project_root: Path | None = None,
 ) -> int:
     project_root = project_root or Path.cwd()
+    water_regions = water_regions or []
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
+    history = BehaviorFeatureHistory(window_size=feature_history_window)
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=FEATURE_COLUMNS)
         writer.writeheader()
@@ -70,6 +75,8 @@ def export_labeled_features(
                 image=row.image,
                 label=row.label,
                 feed_regions=feed_regions,
+                water_regions=water_regions,
+                history=history,
             )
             writer.writerow(feature_row)
             written += 1
@@ -83,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-labels", default="dataset/behavior_labels/val.csv", help="Validation behavior label CSV.")
     parser.add_argument("--output-dir", default="dataset/behavior_features", help="Directory for exported feature CSV files.")
     parser.add_argument("--feed-regions", default="config/feed_regions.yaml", help="Optional feed region YAML.")
+    parser.add_argument("--water-regions", default="config/water_regions.yaml", help="Optional fixed drinking region YAML for LightGBM features.")
+    parser.add_argument("--feature-history-window", type=int, default=5, help="Recent row window for temporal feature export.")
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size.")
     parser.add_argument("--conf", type=float, default=0.05, help="YOLO confidence threshold for keeping candidate boxes.")
     return parser
@@ -117,6 +126,7 @@ def run(args: argparse.Namespace) -> int:
     model = YOLO(str(model_path))
     predict_detections = make_yolo_predictor(model, imgsz=args.imgsz, conf=args.conf)
     feed_regions = load_feed_regions(resolve_image_path(project_root, args.feed_regions))
+    water_regions = load_regions(resolve_image_path(project_root, args.water_regions))
     output_dir = resolve_image_path(project_root, args.output_dir)
 
     split_jobs = [
@@ -131,6 +141,8 @@ def run(args: argparse.Namespace) -> int:
             predict_detections=predict_detections,
             image_size_reader=default_image_size_reader,
             feed_regions=feed_regions,
+            water_regions=water_regions,
+            feature_history_window=args.feature_history_window,
             project_root=project_root,
         )
         print(f"{split}: wrote {written} rows to {output_path.resolve()}")

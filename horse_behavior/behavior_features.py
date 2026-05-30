@@ -1,11 +1,29 @@
 import math
+from collections import deque
 from pathlib import Path
 from typing import Callable, Iterable
 
-from horse_behavior.infer_behavior import Detection, box_area, box_center, intersection_area, select_best_head, select_largest_box
+from horse_behavior.infer_behavior import (
+    DEFAULT_MIN_WATER_HEAD_OVERLAP_RATIO,
+    Detection,
+    box_area,
+    box_center,
+    head_low_in_horse,
+    head_near_horse_front_edge,
+    head_near_regions,
+    intersection_area,
+    select_best_head,
+    select_largest_box,
+)
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+DEFAULT_HEAD_LOW_RATIO = 0.58
+DEFAULT_REGION_NEAR_RATIO = 0.12
+DEFAULT_GRASS_OVERLAP_RATIO = 0.08
+DEFAULT_GRASS_DISTANCE_INSIDE_RATIO = 0.15
+DEFAULT_GRASS_DISTANCE_OUTSIDE_RATIO = 0.12
+DEFAULT_TEMPORAL_WINDOW = 5
 
 FEATURE_COLUMNS = [
     "split",
@@ -59,7 +77,63 @@ FEATURE_COLUMNS = [
     "head_y_ratio",
     "head_front_edge_ratio",
     "head_bottom_to_horse_bottom",
+    "grass_count",
+    "water_count",
+    "max_grass_conf",
+    "max_water_conf",
+    "nearest_grass_conf",
+    "nearest_water_conf",
+    "min_head_grass_dist",
+    "min_head_water_dist",
+    "max_head_grass_overlap",
+    "max_head_water_overlap",
+    "head_low_in_horse",
+    "head_near_horse_front_edge",
+    "detected_water_large_overlap",
+    "detected_grass_overlap",
+    "head_near_feed_region",
+    "head_near_water_region",
+    "water_region_head_low",
+    "grass_distance_rule_hit",
+    "water_overlap_rule_hit",
+    "head_in_feed_region",
+    "head_dist_to_feed_region",
+    "grass_dist_to_feed_region",
+    "head_in_water_region",
+    "head_dist_to_water_region",
+    "water_dist_to_water_region",
+    "detection_count",
+    "head_rel_y_mean_5",
+    "head_rel_y_delta_5",
+    "head_water_dist_min_5",
+    "head_grass_dist_min_5",
+    "water_overlap_mean_5",
+    "grass_overlap_mean_5",
+    "horse_box_stability_5",
 ]
+
+
+class BehaviorFeatureHistory:
+    def __init__(self, window_size: int = DEFAULT_TEMPORAL_WINDOW):
+        self.window_size = max(1, int(window_size))
+        self.history: deque[dict[str, float | int | str]] = deque(maxlen=self.window_size)
+
+    def update(self, row: dict[str, float | int | str]) -> dict[str, float]:
+        snapshot = {
+            "head_rel_y": float(row["head_rel_y"]),
+            "head_exists": int(row["head_exists"]),
+            "head_to_water_dist": float(row["head_to_water_dist"]),
+            "head_to_grass_dist": float(row["head_to_grass_dist"]),
+            "head_water_overlap": float(row["head_water_overlap"]),
+            "head_grass_overlap": float(row["head_grass_overlap"]),
+            "horse_exists": int(row["horse_exists"]),
+            "horse_cx": float(row["horse_cx"]),
+            "horse_cy": float(row["horse_cy"]),
+            "horse_w": float(row["horse_w"]),
+            "horse_h": float(row["horse_h"]),
+        }
+        self.history.append(snapshot)
+        return _temporal_features(list(self.history))
 
 
 def _missing_box_features(prefix: str) -> dict[str, float | int]:
@@ -114,6 +188,23 @@ def _center_inside_regions(center: tuple[float, float], regions: Iterable[tuple[
     return 0
 
 
+def _point_distance_to_regions(
+    point: tuple[float, float] | None,
+    regions: Iterable[tuple[float, float, float, float]],
+    image_size: tuple[int, int],
+) -> float:
+    regions = list(regions)
+    if point is None or not regions:
+        return -1
+    px, py = point
+    distances = []
+    for x1, y1, x2, y2 in regions:
+        nearest_x = min(max(px, x1), x2)
+        nearest_y = min(max(py, y1), y2)
+        distances.append(math.hypot(px - nearest_x, py - nearest_y))
+    return min(distances) / max(1.0, float(max(image_size)))
+
+
 def _overlap_ratio(reference: Detection | None, other: Detection | None) -> float:
     if reference is None or other is None:
         return -1
@@ -123,12 +214,24 @@ def _overlap_ratio(reference: Detection | None, other: Detection | None) -> floa
     return intersection_area(reference.xyxy, other.xyxy) / reference_area
 
 
+def _max_overlap_ratio(reference: Detection | None, candidates: list[Detection]) -> float:
+    if reference is None or not candidates:
+        return -1
+    return max(_overlap_ratio(reference, candidate) for candidate in candidates)
+
+
 def _normalized_center_distance(a: Detection | None, b: Detection | None, image_size: tuple[int, int]) -> float:
     if a is None or b is None:
         return -1
     ax, ay = box_center(a.xyxy)
     bx, by = box_center(b.xyxy)
     return math.hypot(ax - bx, ay - by) / max(1.0, float(max(image_size)))
+
+
+def _min_normalized_center_distance(a: Detection | None, candidates: list[Detection], image_size: tuple[int, int]) -> float:
+    if a is None or not candidates:
+        return -1
+    return min(_normalized_center_distance(a, candidate, image_size) for candidate in candidates)
 
 
 def _area_ratio(numerator: Detection | None, denominator: Detection | None) -> float:
@@ -140,6 +243,83 @@ def _area_ratio(numerator: Detection | None, denominator: Detection | None) -> f
     return box_area(numerator.xyxy) / denominator_area
 
 
+def _max_confidence(candidates: list[Detection]) -> float:
+    if not candidates:
+        return -1
+    return max(float(candidate.conf) for candidate in candidates)
+
+
+def _valid_values(rows: list[dict[str, float | int | str]], key: str) -> list[float]:
+    return [float(row[key]) for row in rows if float(row[key]) >= 0]
+
+
+def _mean_valid(rows: list[dict[str, float | int | str]], key: str) -> float:
+    values = _valid_values(rows, key)
+    if not values:
+        return -1
+    return sum(values) / len(values)
+
+
+def _min_valid(rows: list[dict[str, float | int | str]], key: str) -> float:
+    values = _valid_values(rows, key)
+    if not values:
+        return -1
+    return min(values)
+
+
+def _normalized_horse_box(row: dict[str, float | int | str]) -> tuple[float, float, float, float] | None:
+    if int(row["horse_exists"]) <= 0:
+        return None
+    cx = float(row["horse_cx"])
+    cy = float(row["horse_cy"])
+    width = float(row["horse_w"])
+    height = float(row["horse_h"])
+    if min(cx, cy, width, height) < 0:
+        return None
+    return (cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0)
+
+
+def _box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    overlap = intersection_area(a, b)
+    union = box_area(a) + box_area(b) - overlap
+    if union <= 0:
+        return 0.0
+    return overlap / union
+
+
+def _horse_box_stability(rows: list[dict[str, float | int | str]]) -> float:
+    boxes = [_normalized_horse_box(row) for row in rows]
+    boxes = [box for box in boxes if box is not None]
+    if not boxes:
+        return -1
+    current = boxes[-1]
+    return min(_box_iou(current, box) for box in boxes)
+
+
+def _temporal_features(rows: list[dict[str, float | int | str]]) -> dict[str, float]:
+    head_rel_y_values = [
+        float(row["head_rel_y"])
+        for row in rows
+        if int(row.get("head_exists", 1)) > 0 and int(row["horse_exists"]) > 0
+    ]
+    if head_rel_y_values:
+        head_rel_y_mean = sum(head_rel_y_values) / len(head_rel_y_values)
+        head_rel_y_delta = head_rel_y_values[-1] - head_rel_y_values[0]
+    else:
+        head_rel_y_mean = -1
+        head_rel_y_delta = -1
+
+    return {
+        "head_rel_y_mean_5": head_rel_y_mean,
+        "head_rel_y_delta_5": head_rel_y_delta,
+        "head_water_dist_min_5": _min_valid(rows, "head_to_water_dist"),
+        "head_grass_dist_min_5": _min_valid(rows, "head_to_grass_dist"),
+        "water_overlap_mean_5": _mean_valid(rows, "head_water_overlap"),
+        "grass_overlap_mean_5": _mean_valid(rows, "head_grass_overlap"),
+        "horse_box_stability_5": _horse_box_stability(rows),
+    }
+
+
 def extract_behavior_features(
     detections: list[Detection],
     image_size: tuple[int, int],
@@ -147,14 +327,20 @@ def extract_behavior_features(
     image: str = "",
     label: str = "",
     feed_regions: list[tuple[float, float, float, float]] | None = None,
+    water_regions: list[tuple[float, float, float, float]] | None = None,
+    history: BehaviorFeatureHistory | None = None,
 ) -> dict[str, str | float | int]:
     feed_regions = feed_regions or []
+    water_regions = water_regions or []
     image_width, image_height = image_size
+    scale = max(1.0, float(max(image_size)))
 
     horse = select_largest_box(detections, "horse")
     head = select_best_head(detections, horse)
-    grass = _select_nearest_to_head([d for d in detections if d.name == "grass"], head)
-    water = _select_nearest_to_head([d for d in detections if d.name == "water"], head)
+    grass_candidates = [d for d in detections if d.name == "grass"]
+    water_candidates = [d for d in detections if d.name == "water"]
+    grass = _select_nearest_to_head(grass_candidates, head)
+    water = _select_nearest_to_head(water_candidates, head)
     lying_horse = select_largest_box(detections, "lying_horse")
 
     row: dict[str, str | float | int] = {
@@ -221,6 +407,59 @@ def extract_behavior_features(
             "head_y_ratio": box_center(head.xyxy)[1] / max(1.0, float(image_height)) if head else -1,
         }
     )
+
+    head_center = box_center(head.xyxy) if head is not None else None
+    grass_center = box_center(grass.xyxy) if grass is not None else None
+    water_center = box_center(water.xyxy) if water is not None else None
+    head_is_low = int(head_low_in_horse(head, horse, DEFAULT_HEAD_LOW_RATIO)) if head is not None else 0
+    head_near_feed = int(head_near_regions(head, feed_regions, DEFAULT_REGION_NEAR_RATIO * scale)) if head else 0
+    head_near_water = int(head_near_regions(head, water_regions, DEFAULT_REGION_NEAR_RATIO * scale)) if head else 0
+    max_grass_overlap = _max_overlap_ratio(head, grass_candidates)
+    max_water_overlap = _max_overlap_ratio(head, water_candidates)
+
+    grass_distance_rule_hit = 0
+    if head is not None:
+        for candidate in grass_candidates:
+            dist = _normalized_center_distance(head, candidate, image_size)
+            in_feed = _center_inside_regions(box_center(candidate.xyxy), feed_regions)
+            threshold = DEFAULT_GRASS_DISTANCE_INSIDE_RATIO if in_feed else DEFAULT_GRASS_DISTANCE_OUTSIDE_RATIO
+            if dist >= 0 and dist <= threshold:
+                grass_distance_rule_hit = 1
+                break
+
+    row.update(
+        {
+            "grass_count": len(grass_candidates),
+            "water_count": len(water_candidates),
+            "max_grass_conf": _max_confidence(grass_candidates),
+            "max_water_conf": _max_confidence(water_candidates),
+            "nearest_grass_conf": float(grass.conf) if grass else -1,
+            "nearest_water_conf": float(water.conf) if water else -1,
+            "min_head_grass_dist": _min_normalized_center_distance(head, grass_candidates, image_size),
+            "min_head_water_dist": _min_normalized_center_distance(head, water_candidates, image_size),
+            "max_head_grass_overlap": max_grass_overlap,
+            "max_head_water_overlap": max_water_overlap,
+            "head_low_in_horse": head_is_low,
+            "head_near_horse_front_edge": int(head_near_horse_front_edge(head, horse)) if head is not None and horse is not None else 0,
+            "detected_water_large_overlap": int(max_water_overlap >= DEFAULT_MIN_WATER_HEAD_OVERLAP_RATIO),
+            "detected_grass_overlap": int(max_grass_overlap >= DEFAULT_GRASS_OVERLAP_RATIO),
+            "head_near_feed_region": head_near_feed,
+            "head_near_water_region": head_near_water,
+            "water_region_head_low": int(head_near_water and head_is_low),
+            "grass_distance_rule_hit": grass_distance_rule_hit,
+            "water_overlap_rule_hit": int(max_water_overlap >= DEFAULT_MIN_WATER_HEAD_OVERLAP_RATIO and head_is_low),
+            "head_in_feed_region": _center_inside_regions(head_center, feed_regions) if head_center else 0,
+            "head_dist_to_feed_region": _point_distance_to_regions(head_center, feed_regions, image_size),
+            "grass_dist_to_feed_region": _point_distance_to_regions(grass_center, feed_regions, image_size),
+            "head_in_water_region": _center_inside_regions(head_center, water_regions) if head_center else 0,
+            "head_dist_to_water_region": _point_distance_to_regions(head_center, water_regions, image_size),
+            "water_dist_to_water_region": _point_distance_to_regions(water_center, water_regions, image_size),
+            "detection_count": len(detections),
+        }
+    )
+
+    temporal = history.update(row) if history is not None else _temporal_features([row])
+    row.update(temporal)
 
     return {column: row[column] for column in FEATURE_COLUMNS}
 

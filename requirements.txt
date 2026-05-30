@@ -1,0 +1,15 @@
+numpy==1.26.4
+pandas==2.3.1
+opencv-python==4.11.0.86
+pillow==11.0.0
+PyYAML==6.0.2
+joblib==1.5.1
+scikit-learn==1.7.1
+scipy==1.16.1
+lightgbm==4.6.0
+torch>=2.6,<2.7
+torchvision>=0.21,<0.22
+ultralytics==8.4.53
+ultralytics-thop==2.0.19
+tqdm==4.67.1
+matplotlib==3.8.4
