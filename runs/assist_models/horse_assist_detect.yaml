@@ -1,0 +1,14 @@
+type: yolo11
+name: horse_assist_detect-r20260601
+provider: HorseBehavior
+display_name: Horse Assist Detect
+model_path: horse_assist_detect.onnx
+iou_threshold: 0.45
+conf_threshold: 0.25
+max_det: 300
+classes:
+  - head
+  - horse
+  - water
+  - feces
+  - person

@@ -6,3 +6,4 @@ tests
 outputs
 .cache
 .claude
+tmp
