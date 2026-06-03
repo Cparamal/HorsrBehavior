@@ -73,6 +73,7 @@ class InferenceState:
     water_guard_overlap: float
     guarded_from_drinking: bool
     person_intrusion: bool
+    person_intrusion_overlap: float
 
 
 def resolve_project_path(value: str | Path) -> Path:
@@ -166,19 +167,52 @@ def max_box_overlap_ratio(
 
 
 
-def is_box_in_polygon(box: tuple[float, float, float, float] | None, polygons: list[np.ndarray]) -> bool:
+def compute_person_stall_overlap(box: tuple[float, float, float, float] | None, polygons: list[np.ndarray]) -> float:
     if box is None or not polygons:
-        return False
+        return 0.0
+    bx1, by1, bx2, by2 = box
+    box_area_val = (bx2 - bx1) * (by2 - by1)
+    if box_area_val <= 0:
+        return 0.0
+    best_overlap = 0.0
     for polygon in polygons:
         if polygon.size < 6:
             continue
-        min_x = float(np.min(polygon[:, 0]))
-        min_y = float(np.min(polygon[:, 1]))
-        max_x = float(np.max(polygon[:, 0]))
-        max_y = float(np.max(polygon[:, 1]))
-        if box_overlap_ratio(box, (min_x, min_y, max_x, max_y)) > 0:
-            return True
-    return False
+        # Build a mask for the polygon and the person box, compute intersection
+        min_x = int(np.floor(min(bx1, np.min(polygon[:, 0]))))
+        min_y = int(np.floor(min(by1, np.min(polygon[:, 1]))))
+        max_x = int(np.ceil(max(bx2, np.max(polygon[:, 0]))))
+        max_y = int(np.ceil(max(by2, np.max(polygon[:, 1]))))
+        w = max(max_x - min_x, 1)
+        h = max(max_y - min_y, 1)
+        poly_mask = np.zeros((h, w), dtype=np.uint8)
+        shifted_poly = polygon.copy()
+        shifted_poly[:, 0] -= min_x
+        shifted_poly[:, 1] -= min_y
+        cv2.fillPoly(poly_mask, [shifted_poly.astype(np.int32)], 1)
+        # Count polygon area in pixels
+        poly_area = int(np.sum(poly_mask))
+        if poly_area <= 0:
+            continue
+        # Person box region on mask
+        pbx1 = int(np.floor(bx1)) - min_x
+        pby1 = int(np.floor(by1)) - min_y
+        pbx2 = int(np.ceil(bx2)) - min_x
+        pby2 = int(np.ceil(by2)) - min_y
+        pbx1 = max(0, pbx1)
+        pby1 = max(0, pby1)
+        pbx2 = min(w, pbx2)
+        pby2 = min(h, pby2)
+        if pbx2 <= pbx1 or pby2 <= pby1:
+            continue
+        person_region = poly_mask[pby1:pby2, pbx1:pbx2]
+        intersection = int(np.sum(person_region))
+        # Overlap = intersection / person_box_area (in pixels)
+        person_box_pixels = (pbx2 - pbx1) * (pby2 - pby1)
+        overlap = intersection / person_box_pixels if person_box_pixels > 0 else 0.0
+        if overlap > best_overlap:
+            best_overlap = overlap
+    return best_overlap
 
 def select_best_head(detections: list[Detection], horse: Detection | None) -> Detection | None:
     heads = [d for d in detections if d.name == "head"]
@@ -490,6 +524,8 @@ def write_csv_header(writer) -> None:
             "water_guard_overlap",
             "guarded_from_drinking",
             "horse_conf",
+            "person_stall_overlap",
+            "person_intrusion",
             "detections",
         ]
     )
@@ -515,6 +551,8 @@ def write_csv_row(
             "" if state is None else f"{state.water_guard_overlap:.4f}",
             "" if state is None else int(state.guarded_from_drinking),
             "" if horse is None else f"{horse.conf:.4f}",
+            "" if state is None else int(state.person_intrusion),
+            "" if state is None else f"{state.person_intrusion_overlap:.4f}",
             detection_summary(detections),
         ]
     )
@@ -592,7 +630,8 @@ def update_inference_state(
     )
 
     person_box = select_largest_box(detections, "person")
-    person_intrusion = is_box_in_polygon(None if person_box is None else person_box.xyxy, stall_polygons)
+    person_intrusion_overlap = compute_person_stall_overlap(None if person_box is None else person_box.xyxy, stall_polygons)
+    person_intrusion = person_intrusion_overlap > 0.80
 
     return InferenceState(
         prediction=prediction,
@@ -601,6 +640,7 @@ def update_inference_state(
         water_guard_overlap=water_guard_overlap,
         guarded_from_drinking=guarded,
         person_intrusion=person_intrusion,
+        person_intrusion_overlap=person_intrusion_overlap,
     )
 
 
