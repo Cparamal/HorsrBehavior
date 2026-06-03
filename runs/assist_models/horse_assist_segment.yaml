@@ -1,0 +1,11 @@
+type: yolo11_seg
+name: horse_assist_segment-r20260601
+provider: HorseBehavior
+display_name: Horse Assist Stall Segment
+model_path: horse_assist_segment.onnx
+iou_threshold: 0.45
+conf_threshold: 0.25
+max_det: 20
+epsilon_factor: 0.005
+classes:
+  - stall

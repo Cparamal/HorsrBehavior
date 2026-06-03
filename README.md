@@ -1,148 +1,104 @@
-## 重要文件
+﻿# 马匹行为识别 — 多帧时序推理 (TCN)
 
-| 类型 | 默认路径 |
+## 概述
+
+多帧时序识别使用 **TCN（Temporal Convolutional Network）** 对马的行为进行窗口级推理。
+每 8 FPS 采样，滑动窗口 32 帧（4 秒），一次推理输出一个行为标签。
+
+支持四类行为：`standing`（站立）、`eating`（进食）、`drinking`（喝水）、`lying`（卧倒）。
+
+## 模型文件
+
+| 文件 | 用途 |
 | --- | --- |
-| YOLO 检测模型 | `runs\detect\runs\detect\horse_behavior_yolo\weights\best.pt` |
-| ROI 行为分类模型 | `runs\behavior_yolo_roi_cls\horse_behavior_yolo_roi_cls\weights\best.pt` |
-| LightGBM 模型 | `runs\behavior_cls\lightgbm_behavior.joblib` |
-| LightGBM 标签编码器 | `runs\behavior_cls\label_encoder.joblib` |
-| LightGBM 特征列 | `runs\behavior_cls\feature_columns.txt` |
-| 吃饭区域配置 | `config\feed_regions.yaml` |
-| 喝水区域配置 | `config\water_regions.yaml` |
+| `runs/timesequence/tcn_behavior_8fps_4s/best.pt` | TCN 行为分类模型 |
+| `runs/multiframes/horse_multiframe_detect/weights/best.pt` | YOLO 检测模型（horse/head/water/person/feces） |
+| `runs/multiframes/horse_multiframe_segment/weights/best.pt` | YOLO 分割模型（stall 马厩） |
+| `dataset/timesequence_8fps_4s/normalization.npz` | 特征归一化参数 |
+| `config/feed_regions.yaml` | 固定食槽区域配置 |
 
-## 使用 ROI rules 推理脚本
-
-入口脚本：
+## 快速开始
 
 ```powershell
-.\.venv\Scripts\python.exe infer_roi_rules.py `
-  --det-model runs\detect\runs\detect\horse_behavior_yolo\weights\best.pt `
-  --cls-model runs\behavior_yolo_roi_cls\horse_behavior_yolo_roi_cls\weights\best.pt `
-  --feed-regions config\feed_regions.yaml `
-  --water-regions config\water_regions.yaml `
-  --source video\stable_20260522_105023.mp4 `
-  --output outputs\roi_rules_check.mp4 `
-  --csv outputs\roi_rules_check.csv `
-  --start-sec 1260 `
-  --end-sec 1380 `
-  --max-frames 0 `
+.\.venv\Scripts\python.exe -m horse_behavior.infer_temporal_behavior `
+  --source video\stable_20260523_105109.mp4 `
+  --tcn-model runs\timesequence\tcn_behavior_8fps_4s\best.pt `
+  --dataset-dir dataset\timesequence_8fps_4s `
+  --sample-fps 8 `
+  --render-mode full `
+  --output-fps 30 `
   --no-display
 ```
 
-常用参数：
+## 常用参数
 
-| 参数 | 说明 |
-| --- | --- |
-| `--det-model` | YOLO 检测模型路径。 |
-| `--cls-model` | ROI 行为分类模型路径。 |
-| `--feed-regions` | 固定吃饭区域配置。 |
-| `--water-regions` | 固定喝水区域配置。 |
-| `--source` | 输入视频路径。 |
-| `--output` | 输出标注视频路径。 |
-| `--csv` | 输出逐帧结果 CSV。传空字符串可关闭 CSV。 |
-| `--start-sec` | 从视频第几秒开始处理。 |
-| `--end-sec` | 处理到视频第几秒结束。 |
-| `--max-frames` | 最多处理帧数。`0` 表示处理完整选中区间。 |
-| `--smooth-window` | 行为标签多数投票平滑窗口。 |
-| `--drinking-smooth-window` | 喝水进入/退出使用的短平滑窗口。 |
-| `--debug` | 绘制调试信息。 |
-| `--no-display` | 不打开实时预览窗口，服务器或批处理时建议开启。 |
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--source` | `video/stable_20260523_105109.mp4` | 输入视频路径 |
+| `--output` | `outputs/tcn_behavior_infer.mp4` | 输出标注视频 |
+| `--csv` | `outputs/tcn_behavior_infer.csv` | 帧级行为 CSV（传空字符串关闭） |
+| `--tcn-model` | TCN 模型路径 | TCN 行为 checkpoint |
+| `--det-model` | YOLO 检测权重 | 目标检测模型 |
+| `--segment-model` | YOLO 分割权重 | 马厩分割模型 |
+| `--dataset-dir` | 时序数据集目录 | 需包含 `normalization.npz` |
+| `--sample-fps` | `2.0` | TCN 采样帧率（推荐 8） |
+| `--start-sec` | `0` | 起始时间（秒） |
+| `--end-sec` | `0` | 结束时间（秒），0 表示视频末尾 |
+| `--max-seconds` | `0` | 从起始时间起最大处理秒数 |
+| `--render-mode` | `full` | `full` 插帧输出 / `sampled` 仅采样帧 |
+| `--output-fps` | `30` | 输出视频帧率 |
+| `--no-display` | — | 关闭实时预览窗口 |
+| `--det-device` | — | YOLO 设备，如 `0`（GPU）或 `cpu` |
+| `--device` | `auto` | TCN 设备 |
+| `--conf` | `0.05` | YOLO 检测置信度阈值 |
+| `--draw-conf` | `0.25` | 非马检测框绘制最低置信度 |
+| `--min-drinking-water-overlap` | `0.10` | 喝水护栏：head 与水槽重叠阈值（10%） |
+| `--smooth-windows` | `3` | TCN 输出窗口多数投票平滑 |
+| `--smooth-frames` | `5` | 帧级滑动窗口平滑过滤异常帧 |
+| `--draw-water-regions` | `True` | 绘制水槽 ROI（`--no-draw-water-regions` 关闭） |
+| `--draw-stall-regions` | `False` | 绘制马厩 ROI（`--draw-stall-regions` 开启） |
 
-输出 CSV 主要字段：
-
-| 字段 | 说明 |
-| --- | --- |
-| `behavior` | 平滑后的最终行为。 |
-| `raw_behavior` | 融合后但未平滑的行为。 |
-| `source` | 当前行为来源，例如 ROI、rule 或 fusion。 |
-| `confidence` | 融合置信度。 |
-| `roi_behavior` | ROI 分类模型输出。 |
-| `rule_behavior` | 规则护栏输出。 |
-| `rule_reason` | 规则命中原因。 |
-| `detections` | 当前帧检测目标摘要。 |
-
-## 使用 LightGBM 推理脚本
-
-推荐通过统一入口 `infer.py` 调用：
+## 指定时间段推理
 
 ```powershell
-.\.venv\Scripts\python.exe infer.py --method lightgbm `
-  --model runs\detect\runs\detect\horse_behavior_yolo\weights\best.pt `
-  --behavior-model runs\behavior_cls\lightgbm_behavior.joblib `
-  --label-encoder runs\behavior_cls\label_encoder.joblib `
-  --feature-columns runs\behavior_cls\feature_columns.txt `
-  --feed-regions config\feed_regions.yaml `
-  --water-regions config\water_regions.yaml `
-  --feature-history-window 5 `
-  --smooth-window 10 `
-  --event-min-frames 8 `
+# 从第 600 秒到第 720 秒
+.\.venv\Scripts\python.exe -m horse_behavior.infer_temporal_behavior `
   --source video\stable_20260522_105023.mp4 `
-  --output outputs\lightgbm_check.mp4 `
-  --csv outputs\lightgbm_check.csv `
-  --start-sec 1260 `
-  --end-sec 1380 `
-  --max-frames 0 `
+  --tcn-model runs\timesequence\tcn_behavior_8fps_4s\best.pt `
+  --dataset-dir dataset\timesequence_8fps_4s `
+  --sample-fps 8 `
+  --start-sec 600 `
+  --end-sec 720 `
+  --render-mode full `
+  --output-fps 30 `
   --no-display
 ```
 
-常用参数：
+## 推理流程
 
-| 参数 | 说明 |
-| --- | --- |
-| `--model` | YOLO 检测模型路径。 |
-| `--behavior-model` | LightGBM 行为分类模型。 |
-| `--label-encoder` | LightGBM 标签编码器。 |
-| `--feature-columns` | 训练时保存的特征列顺序。 |
-| `--feed-regions` | 固定吃饭区域配置，用于特征和校正。 |
-| `--water-regions` | 固定喝水区域配置，用于特征和校正。 |
-| `--feature-history-window` | 特征提取时使用的历史帧窗口。 |
-| `--smooth-window` | LightGBM 概率平滑窗口。 |
-| `--event-min-frames` | 切换最终事件前要求连续确认的帧数。 |
-| `--source` | 输入视频路径。 |
-| `--output` | 输出标注视频路径。 |
-| `--csv` | 输出逐帧结果 CSV。 |
-| `--start-sec` | 从视频第几秒开始处理。 |
-| `--end-sec` | 处理到视频第几秒结束。 |
-| `--max-frames` | 最多处理帧数。`0` 表示处理完整选中区间。 |
-| `--debug` | 绘制所有检测框和模型置信度。 |
-| `--no-display` | 不打开实时预览窗口。 |
+```
+视频 → 按 sample-fps 采帧 → 首帧冻结（马厩分割 + 水槽自动标定）
+  → 每采样帧: YOLO检测 → 去重 → 提取特征 → 推入32帧窗口
+  → 窗口满: TCN推理 → 窗口平滑 → 喝水护栏 → 帧平滑
+  → 画框写标签 → 输出 MP4 + CSV
+```
 
-LightGBM CSV 会同时保留原始模型结果、规则校正结果和最终平滑结果：
+## 护栏机制
+
+- **喝水护栏**：TCN 预测 `drinking` 时，要求 head 检测框与自动标定的水槽区域重叠 ≥ 10%，否则回退到上次非喝水行为
+- **水槽自动标定**：未指定 `--water-regions` 时，首帧用 YOLO Detect 自动检测水槽位置并冻结
+- **人员入侵检测**：检测到 person 框与 stall 马厩多边形重叠时，画面四周显示红色边框 + "INTRUSION: Person in Stall" 告警
+
+## 输出 CSV 字段
 
 | 字段 | 说明 |
 | --- | --- |
-| `behavior` | 最终输出行为。 |
-| `confidence` | 最终置信度。 |
-| `calibrated_behavior` | ROI/规则校正后的行为。 |
-| `calibrated_confidence` | 校正后的置信度。 |
-| `raw_behavior` | LightGBM 原始预测行为。 |
-| `raw_confidence` | LightGBM 原始预测置信度。 |
-| `calibration_reason` | 校正原因，例如 `fixed_feed_region_contact`。 |
-| `probabilities` | 各类别概率。 |
-| `detections` | 当前帧检测目标摘要。 |
-
-## 区间处理和输出
-
-两个脚本都支持按时间区间截取视频：
-
-```powershell
---start-sec 1550 --end-sec 1710
-```
-
-如果只想限制帧数，也可以使用：
-
-```powershell
---max-frames 1800
-```
-
-输出视频和 CSV 会自动创建父目录，例如 `outputs\xxx.mp4` 和 `outputs\xxx.csv`。
-
-## 常见问题
-
-| 问题 | 处理方式 |
-| --- | --- |
-| `Missing YOLO model` 或 `Missing behavior model` | 检查模型路径是否存在。 |
-| 窗口无法打开或远程运行报错 | 加上 `--no-display`。 |
-| 输出行为跳变多 | 增大 `--smooth-window` 或 `--event-min-frames`。 |
-| 吃饭/喝水位置判断不对 | 检查 `config\feed_regions.yaml` 和 `config\water_regions.yaml`。 |
-| 路径里有空格 | 使用英文双引号包住路径。 |
+| `frame` | 帧序号 |
+| `time_sec` | 时间戳（秒） |
+| `behavior` | 最终行为标签 |
+| `confidence` | 置信度 |
+| `raw_behavior` | TCN 原始预测 |
+| `raw_confidence` | TCN 原始置信度 |
+| `water_guard_overlap` | head 与水槽重叠比例 |
+| `guarded_from_drinking` | 该帧是否被喝水护栏拦截 |
+| `detections` | 当前帧检测目标摘要 |

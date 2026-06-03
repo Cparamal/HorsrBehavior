@@ -167,6 +167,36 @@ def print_dataset_summary(summary: dict) -> None:
         print(f"    {class_id}: {name} ({count} boxes)")
 
 
+def install_windows_checkpoint_save_guard() -> None:
+    try:
+        from ultralytics.engine.trainer import BaseTrainer
+    except Exception:
+        return
+
+    original_save_model = BaseTrainer.save_model
+    if getattr(original_save_model, "_horse_behavior_guarded", False):
+        return
+
+    def guarded_save_model(self):
+        try:
+            return original_save_model(self)
+        except OSError as exc:
+            is_invalid_argument = getattr(exc, "errno", None) == 22
+            last_ok = getattr(self, "last", None) is not None and self.last.exists() and self.last.stat().st_size > 0
+            best_needed = getattr(self, "best_fitness", None) == getattr(self, "fitness", None)
+            best_ok = getattr(self, "best", None) is not None and self.best.exists() and self.best.stat().st_size > 0
+            if is_invalid_argument and last_ok and (not best_needed or best_ok):
+                print(
+                    "Warning: checkpoint save raised Windows Errno 22 after writing weights; "
+                    "continuing because checkpoint files are present."
+                )
+                return True
+            raise
+
+    guarded_save_model._horse_behavior_guarded = True
+    BaseTrainer.save_model = guarded_save_model
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a YOLO detector for the HorseBehavior dataset.")
     parser.add_argument("--data", default="dataset/data.yaml", help="Path to YOLO data.yaml.")
@@ -210,6 +240,7 @@ def train(args: argparse.Namespace) -> int:
             ".\\.venv\\Scripts\\python.exe -m pip install ultralytics"
         ) from exc
 
+    install_windows_checkpoint_save_guard()
     model = YOLO(args.model)
     train_kwargs = {
         "data": str(summary["data_yaml"]),

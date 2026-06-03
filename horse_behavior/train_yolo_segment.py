@@ -1,0 +1,256 @@
+import argparse
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+from horse_behavior.train_yolo import ensure_ultralytics_config_dir, resolve_output_project
+
+
+class SegmentDatasetValidationError(RuntimeError):
+    """Raised when the YOLO segmentation dataset is not trainable."""
+
+
+def _parse_simple_data_yaml(data_yaml: Path) -> dict:
+    data = {}
+    names = {}
+    in_names = False
+
+    for raw_line in data_yaml.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if line.strip() == "names:":
+            in_names = True
+            continue
+        if in_names and raw_line.startswith((" ", "\t")):
+            key, sep, value = line.strip().partition(":")
+            if not sep:
+                raise SegmentDatasetValidationError(f"Bad names entry in {data_yaml}: {raw_line}")
+            try:
+                names[int(key.strip())] = value.strip().strip("'\"")
+            except ValueError as exc:
+                raise SegmentDatasetValidationError(f"Bad class id in {data_yaml}: {raw_line}") from exc
+            continue
+
+        in_names = False
+        key, sep, value = line.partition(":")
+        if sep:
+            data[key.strip()] = value.strip().strip("'\"")
+
+    data["names"] = names
+    return data
+
+
+def _resolve_split_path(dataset_root: Path, split_value: str) -> Path:
+    split_path = Path(split_value)
+    if split_path.is_absolute():
+        return split_path
+    return dataset_root / split_path
+
+
+def validate_segment_dataset(data_yaml: Path) -> dict:
+    data_yaml = data_yaml.resolve()
+    if not data_yaml.exists():
+        raise SegmentDatasetValidationError(f"Missing data.yaml: {data_yaml}")
+
+    data = _parse_simple_data_yaml(data_yaml)
+    if "train" not in data or "val" not in data:
+        raise SegmentDatasetValidationError("data.yaml must define both train and val paths")
+    if not data["names"]:
+        raise SegmentDatasetValidationError("data.yaml must define class names")
+
+    dataset_root = Path(data.get("path") or data_yaml.parent)
+    if not dataset_root.is_absolute():
+        dataset_root = (data_yaml.parent / dataset_root).resolve()
+
+    class_ids = set(data["names"])
+    class_counts = Counter()
+    split_summary = {}
+    issues = []
+
+    for split in ("train", "val"):
+        image_dir = _resolve_split_path(dataset_root, data[split])
+        label_dir = Path(str(image_dir).replace(f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"))
+        if image_dir.name in {"train", "val"} and image_dir.parent.name == "images":
+            label_dir = image_dir.parent.parent / "labels" / image_dir.name
+
+        if not image_dir.exists():
+            issues.append(f"Missing image directory for {split}: {image_dir}")
+            continue
+        if not label_dir.exists():
+            issues.append(f"Missing label directory for {split}: {label_dir}")
+            continue
+
+        images = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
+        labels = sorted(label_dir.glob("*.txt"))
+        image_stems = {p.stem for p in images}
+        label_stems = {p.stem for p in labels}
+
+        missing_labels = sorted(image_stems - label_stems)
+        missing_images = sorted(label_stems - image_stems)
+        if missing_labels:
+            issues.append(f"{split}: {len(missing_labels)} images have no label file, e.g. {missing_labels[:3]}")
+        if missing_images:
+            issues.append(f"{split}: {len(missing_images)} labels have no image file, e.g. {missing_images[:3]}")
+        if not images:
+            issues.append(f"{split}: no images found in {image_dir}")
+
+        objects = 0
+        for label_file in labels:
+            for line_number, line in enumerate(label_file.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) < 7 or len(parts) % 2 == 0:
+                    issues.append(
+                        f"{label_file}:{line_number}: expected class id plus at least 3 xy points, got {len(parts)} columns"
+                    )
+                    continue
+                try:
+                    class_id = int(parts[0])
+                    coords = list(map(float, parts[1:]))
+                except ValueError:
+                    issues.append(f"{label_file}:{line_number}: could not parse YOLO segmentation values")
+                    continue
+                if class_id not in class_ids:
+                    issues.append(f"{label_file}:{line_number}: class id {class_id} is not defined in data.yaml")
+                if any(value < 0 or value > 1 for value in coords):
+                    issues.append(f"{label_file}:{line_number}: normalized polygon values out of range")
+                class_counts[class_id] += 1
+                objects += 1
+
+        split_summary[split] = {
+            "image_dir": image_dir,
+            "label_dir": label_dir,
+            "images": len(images),
+            "labels": len(labels),
+            "objects": objects,
+        }
+
+    if issues:
+        raise SegmentDatasetValidationError("\n".join(issues))
+
+    return {
+        "data_yaml": data_yaml,
+        "dataset_root": dataset_root,
+        "names": data["names"],
+        "splits": split_summary,
+        "class_counts": class_counts,
+    }
+
+
+def print_dataset_summary(summary: dict) -> None:
+    print(f"Dataset: {summary['data_yaml']}")
+    for split, info in summary["splits"].items():
+        print(
+            f"  {split}: {info['images']} images, "
+            f"{info['labels']} labels, {info['objects']} polygons"
+        )
+    print("  classes:")
+    for class_id, name in sorted(summary["names"].items()):
+        count = summary["class_counts"].get(class_id, 0)
+        print(f"    {class_id}: {name} ({count} polygons)")
+
+
+def install_windows_checkpoint_save_guard() -> None:
+    try:
+        from ultralytics.engine.trainer import BaseTrainer
+    except Exception:
+        return
+
+    original_save_model = BaseTrainer.save_model
+    if getattr(original_save_model, "_horse_behavior_guarded", False):
+        return
+
+    def guarded_save_model(self):
+        try:
+            return original_save_model(self)
+        except OSError as exc:
+            is_invalid_argument = getattr(exc, "errno", None) == 22
+            last_ok = getattr(self, "last", None) is not None and self.last.exists() and self.last.stat().st_size > 0
+            best_needed = getattr(self, "best_fitness", None) == getattr(self, "fitness", None)
+            best_ok = getattr(self, "best", None) is not None and self.best.exists() and self.best.stat().st_size > 0
+            if is_invalid_argument and last_ok and (not best_needed or best_ok):
+                print(
+                    "Warning: checkpoint save raised Windows Errno 22 after writing weights; "
+                    "continuing because checkpoint files are present."
+                )
+                return True
+            raise
+
+    guarded_save_model._horse_behavior_guarded = True
+    BaseTrainer.save_model = guarded_save_model
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train a YOLO segmentation model for stall masks.")
+    parser.add_argument("--data", default="dataset/segment/data.yaml", help="Path to YOLO segmentation data.yaml.")
+    parser.add_argument("--model", default="yolo11n-seg.pt", help="Base YOLO segmentation model.")
+    parser.add_argument("--epochs", type=int, default=80, help="Training epochs.")
+    parser.add_argument("--imgsz", type=int, default=640, help="Training image size.")
+    parser.add_argument("--batch", type=int, default=8, help="Batch size.")
+    parser.add_argument("--project", default="runs/segment", help="Ultralytics output project directory.")
+    parser.add_argument("--name", default="horse_assist_segment", help="Run name under the project directory.")
+    parser.add_argument("--device", default=None, help="Device string, e.g. 0, cpu, or cuda:0.")
+    parser.add_argument("--workers", type=int, default=0, help="DataLoader workers. 0 is safest on Windows.")
+    parser.add_argument("--dry-run", action="store_true", help="Only validate dataset and environment.")
+    return parser
+
+
+def train(args: argparse.Namespace) -> int:
+    project_root = Path(__file__).resolve().parents[1]
+    config_dir = ensure_ultralytics_config_dir(project_root)
+    summary = validate_segment_dataset(Path(args.data))
+
+    print(f"Ultralytics config: {config_dir}")
+    print_dataset_summary(summary)
+
+    if args.dry_run:
+        print("Dry run complete. No training started.")
+        return 0
+
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not import ultralytics. Use the project venv or install it first: "
+            ".\\.venv\\Scripts\\python.exe -m pip install ultralytics"
+        ) from exc
+
+    install_windows_checkpoint_save_guard()
+    model = YOLO(args.model)
+    train_kwargs = {
+        "data": str(summary["data_yaml"]),
+        "epochs": args.epochs,
+        "imgsz": args.imgsz,
+        "batch": args.batch,
+        "project": str(resolve_output_project(project_root, args.project)),
+        "name": args.name,
+        "workers": args.workers,
+    }
+    if args.device:
+        train_kwargs["device"] = args.device
+
+    print("Starting YOLO segmentation training...")
+    results = model.train(**train_kwargs)
+    print("Training complete.")
+    print(results)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return train(args)
+    except SegmentDatasetValidationError as exc:
+        print(f"Dataset validation failed:\n{exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Training failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

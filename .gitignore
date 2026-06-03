@@ -6,3 +6,7 @@ tests
 outputs
 .cache
 .claude
+tmp
+
+dataset/timesequence
+dataset/timesequence_8fps_4s
