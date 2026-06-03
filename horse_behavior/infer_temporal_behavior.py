@@ -72,6 +72,7 @@ class InferenceState:
     detections: list[Detection]
     water_guard_overlap: float
     guarded_from_drinking: bool
+    person_intrusion: bool
 
 
 def resolve_project_path(value: str | Path) -> Path:
@@ -163,6 +164,21 @@ def max_box_overlap_ratio(
         return 0.0
     return max(box_overlap_ratio(box, region) for region in regions)
 
+
+
+def is_box_in_polygon(box: tuple[float, float, float, float] | None, polygons: list[np.ndarray]) -> bool:
+    if box is None or not polygons:
+        return False
+    for polygon in polygons:
+        if polygon.size < 6:
+            continue
+        min_x = float(np.min(polygon[:, 0]))
+        min_y = float(np.min(polygon[:, 1]))
+        max_x = float(np.max(polygon[:, 0]))
+        max_y = float(np.max(polygon[:, 1]))
+        if box_overlap_ratio(box, (min_x, min_y, max_x, max_y)) > 0:
+            return True
+    return False
 
 def select_best_head(detections: list[Detection], horse: Detection | None) -> Detection | None:
     heads = [d for d in detections if d.name == "head"]
@@ -403,7 +419,7 @@ def draw_regions(
                 BOX_COLORS["water_region"],
                 3,
             )
-            draw_label(frame, f"water_roi_{index}", (int(round(x1)), max(32, int(round(y1)) - 8)), color=BOX_COLORS["water_region"])
+            draw_label(frame, "water", (int(round(x1)), max(32, int(round(y1)) - 8)), color=BOX_COLORS["water_region"])
 
 
 def extract_stall_polygons(seg_result, conf_threshold: float) -> list[np.ndarray]:
@@ -520,6 +536,7 @@ def update_inference_state(
     tcn_device: torch.device,
     feed_regions: list[tuple[float, float, float, float]],
     water_regions: list[tuple[float, float, float, float]],
+    stall_polygons: list[np.ndarray],
     image_size: tuple[int, int],
     drinking_guard: DrinkingGuard,
     args: argparse.Namespace,
@@ -568,10 +585,14 @@ def update_inference_state(
     head = select_best_head(detections, horse)
     water_guard_overlap = max_box_overlap_ratio(None if head is None else head.xyxy, water_regions)
     prediction, guarded = drinking_guard.apply(
+
         prediction,
         overlap=water_guard_overlap,
         min_overlap=args.min_drinking_water_overlap,
     )
+
+    person_box = select_largest_box(detections, "person")
+    person_intrusion = is_box_in_polygon(None if person_box is None else person_box.xyxy, stall_polygons)
 
     return InferenceState(
         prediction=prediction,
@@ -579,6 +600,7 @@ def update_inference_state(
         detections=detections,
         water_guard_overlap=water_guard_overlap,
         guarded_from_drinking=guarded,
+        person_intrusion=person_intrusion,
     )
 
 
@@ -610,6 +632,13 @@ def draw_state(
         selected_horse=state.horse,
         show_behavior_conf=args.show_behavior_conf,
     )
+
+    if state is not None and state.person_intrusion:
+        ih, iw = frame.shape[:2]
+        cv2.rectangle(frame, (0, 0), (iw, ih), (0, 0, 255), 8)
+        alert_text = "INTRUSION: Person in Stall"
+        (tw, th), _ = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)
+        cv2.putText(frame, alert_text, ((iw - tw) // 2, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -747,6 +776,7 @@ def run(args: argparse.Namespace) -> int:
                     tcn_device=tcn_device,
                     feed_regions=feed_regions,
                     water_regions=water_regions,
+                    stall_polygons=stall_polygons,
                     image_size=(width, height),
                     drinking_guard=drinking_guard,
                     args=args,
@@ -815,6 +845,7 @@ def run(args: argparse.Namespace) -> int:
                         tcn_device=tcn_device,
                         feed_regions=feed_regions,
                         water_regions=water_regions,
+                        stall_polygons=stall_polygons,
                         image_size=(width, height),
                         drinking_guard=drinking_guard,
                         args=args,
