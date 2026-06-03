@@ -1,0 +1,28 @@
+{
+  "best_epoch": 43,
+  "best_val_macro_f1": 0.9992042557842098,
+  "best_val_accuracy": 0.9998144368157358,
+  "device": "cuda",
+  "train_windows": 21552,
+  "val_windows": 5389,
+  "train_class_counts": {
+    "standing": 10100,
+    "eating": 8863,
+    "lying": 1918,
+    "drinking": 671
+  },
+  "val_class_counts": {
+    "standing": 2526,
+    "eating": 2216,
+    "drinking": 168,
+    "lying": 479
+  },
+  "label_names": [
+    "standing",
+    "eating",
+    "drinking",
+    "lying"
+  ],
+  "feature_count": 81,
+  "time_steps": 32
+}
